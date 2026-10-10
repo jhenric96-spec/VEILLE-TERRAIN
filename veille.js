@@ -93,7 +93,7 @@ const Veille = (() => {
       h('div', {}, h('h2', {}, TITRE),
         h('p', { class: 'discret' }, cat.length
           ? `${CATEGORIES.length} catégories · ${cat.filter(p => p.STATUT !== 'EXCLU').length} références · facings ${modeFacing() === 'photo' ? 'par photo' : 'saisis'}`
-          : Reglages.lire().url ? 'Catalogue pas encore chargé sur cet appareil.' : 'Catalogue non chargé : configurez d\'abord le serveur (⚙ Paramètres).')),
+          : Reglages.lire().url ? 'Catalogue pas encore chargé sur cet appareil.' : 'Catalogue non chargé : scannez d\'abord le QR code de connexion.')),
       cat.length || !Reglages.lire().url
         ? h('button', { class: 'btn primaire', disabled: !cat.length, onclick: nouvelle }, '+ Nouvelle visite')
         : h('button', { class: 'btn primaire', onclick: async ev => {

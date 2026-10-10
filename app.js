@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.10.0';
+const VERSION_APP = '1.11.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -425,14 +425,15 @@ async function afficherAccueil() {
         h('span', { class: 'logo' }, h('img', { src: 'logo-siagro.png', alt: 'SIAGRO' })),
         h('strong', {}, 'VEILLE TERRAIN'),
         h('span', { class: 'pastille ' + (enLigne ? 'ok' : 'off') }, enLigne ? 'En ligne' : 'Hors ligne')),
-      h('button', { class: 'btn-icone', 'aria-label': 'Paramètres', onclick: afficherReglages }, '⚙')),
+      h('button', { class: 'btn-icone', 'aria-label': 'Paramètres (code requis)', onclick: ouvrirReglages }, '⚙')),
   );
 
   const main = h('main', { class: 'accueil' });
   racineApp.append(main);
 
-  if (!r.url) main.append(h('div', { class: 'bandeau' }, 'Serveur non configuré : les fiches restent sur cet appareil. ',
-    h('button', { class: 'lien', onclick: afficherReglages }, 'Configurer')));
+  if (!r.url) main.append(h('div', { class: 'bandeau' }, 'Téléphone non connecté : les fiches restent sur cet appareil. '
+    + 'Scannez le QR code de connexion fourni par votre responsable. ',
+    h('button', { class: 'lien', onclick: ouvrirReglages }, 'Responsable : configurer')));
 
   // La veille GMS sur catalogue remplace le formulaire Kobo « gms », gardé pour la liste des magasins et l'historique.
   if (window.Veille) main.append(await Veille.carte());
@@ -480,6 +481,56 @@ async function afficherAccueil() {
 
 /* ---------- Paramètres ---------- */
 
+/* Verrou des paramètres : seul le responsable y accède. Le code n'est jamais stocké en clair :
+   seule son empreinte PBKDF2-SHA256 figure ici (pour la changer : outils\changer-code-parametres.ps1). */
+const VERROU = { sel: '232e4e7cbdda44c040da061c2ce86655', iterations: 150000, empreinte: 'ad935e8fe0c9dd7c005545b1105a8b8c908d7832085e252e393940d276fd21dd' };
+const DUREE_DEVERROUILLAGE = 10 * 60 * 1000;   // reste ouvert 10 minutes, jamais mémorisé au-delà de la session
+let deverrouilleJusqua = 0, essaisRates = 0, bloqueJusqua = 0;
+
+async function empreinteCode(code) {
+  const octets = new Uint8Array(VERROU.sel.match(/../g).map(x => parseInt(x, 16)));
+  const cle = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: octets, iterations: VERROU.iterations }, cle, 256);
+  return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function ouvrirReglages() {
+  if (Date.now() < deverrouilleJusqua) return afficherReglages();
+  if (!(window.crypto && crypto.subtle)) return toast('Paramètres indisponibles : ouvrez l\'application par son adresse https', 6000);
+  const champ = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Code des paramètres', 'aria-label': 'Code des paramètres' });
+  const erreur = h('small', { class: 'avert', hidden: true });
+  const valider = async () => {
+    if (Date.now() < bloqueJusqua) {
+      erreur.hidden = false; erreur.textContent = `Trop d'essais : réessayez dans ${Math.ceil((bloqueJusqua - Date.now()) / 1000)} s.`;
+      return;
+    }
+    const ok = (await empreinteCode(champ.value)) === VERROU.empreinte;
+    if (ok) {
+      essaisRates = 0; deverrouilleJusqua = Date.now() + DUREE_DEVERROUILLAGE;
+      voile.remove(); afficherReglages();
+      return;
+    }
+    essaisRates++;
+    if (essaisRates >= 5) { bloqueJusqua = Date.now() + 60000; essaisRates = 0; }
+    erreur.hidden = false;
+    erreur.textContent = Date.now() < bloqueJusqua ? 'Code incorrect. Trop d\'essais : patientez 1 minute.' : 'Code incorrect.';
+    champ.value = ''; champ.focus();
+  };
+  champ.addEventListener('keydown', ev => { if (ev.key === 'Enter') valider(); });
+  const voile = h('div', { class: 'voile centre' },
+    h('div', { class: 'feuille', role: 'dialog', 'aria-label': 'Paramètres verrouillés' },
+      h('h3', {}, '🔒 Paramètres verrouillés'),
+      h('p', { class: 'discret' }, 'Réservé au responsable de la veille. Les merchandisers n\'en ont pas besoin.'),
+      champ, erreur,
+      h('div', { class: 'actions-bas' },
+        h('button', { class: 'btn', onclick: () => voile.remove() }, 'Annuler'),
+        h('button', { class: 'btn primaire', onclick: valider }, 'Déverrouiller'))));
+  document.body.append(voile);
+  setTimeout(() => champ.focus(), 50);
+}
+
+function verrouillerReglages() { deverrouilleJusqua = 0; toast('Paramètres verrouillés 🔒'); afficherAccueil(); }
+
 function afficherReglages() {
   const r = Reglages.lire();
   vider();
@@ -488,7 +539,8 @@ function afficherReglages() {
     aide ? h('small', { class: 'discret' }, aide) : null);
   racineApp.append(
     h('header', { class: 'barre' }, h('button', { class: 'btn-icone', 'aria-label': 'Retour', onclick: afficherAccueil }, '←'),
-      h('div', { class: 'barre-titre' }, h('strong', {}, 'Paramètres'))),
+      h('div', { class: 'barre-titre' }, h('strong', {}, 'Paramètres')),
+      h('button', { class: 'btn-icone', 'aria-label': 'Verrouiller les paramètres', title: 'Verrouiller', onclick: verrouillerReglages }, '🔒')),
     h('main', { class: 'reglages' },
       champ('r-url', 'Adresse du serveur (Google Apps Script)', r.url, 'URL se terminant par /exec, fournie par l\'administrateur.', 'url'),
       champ('r-jeton', 'Clé d\'accès', r.jeton, 'Même valeur que JETON dans le script serveur.'),
@@ -1468,6 +1520,8 @@ function choisirUtilisateur() {
 async function importerDepuisAdresse() {
   const p = new URLSearchParams(location.search).get('importer');
   if (!p) return;
+  // Réservé au PC (localhost) : en ligne, modifier le catalogue passe par le serveur ou par les paramètres verrouillés
+  if (!/^(localhost|127\.)/.test(location.hostname)) { history.replaceState(history.state, '', location.pathname); return; }
   history.replaceState(history.state, '', location.pathname);
   const bilan = [];
   for (const chemin of p.split(',').map(x => x.trim()).filter(Boolean)) {
