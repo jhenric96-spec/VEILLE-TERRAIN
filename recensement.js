@@ -183,19 +183,45 @@ const Recensement = (() => {
 
   /* ---------- Carte d'accueil ---------- */
 
+  // « aujourd'hui à 22:17 » ou « le 09/10/2026 » : date de la dernière mise à jour du catalogue (cartes de l'accueil)
+  function dateMajCatalogue() {
+    const r = Reglages.lire();
+    if (!r.catalogueMaj) return '';
+    const d = new Date(r.catalogueMaj);
+    return d.toDateString() === new Date().toDateString()
+      ? `aujourd'hui à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+      : `le ${d.toLocaleDateString('fr-FR')}`;
+  }
+
+  // Bouton ⟳ Actualiser des cartes de l'accueil : catalogue + photos (+ historique des visites si fourni)
+  function boutonActualiser(enPlus) {
+    return h('button', { class: 'btn petit', disabled: !navigator.onLine, title: navigator.onLine ? '' : 'Pas de réseau', onclick: async ev => {
+      const b = ev.currentTarget;
+      b.disabled = true; b.textContent = '⟳ Actualisation…';
+      await telechargerCatalogue({ silencieux: false });
+      if (enPlus) await enPlus();
+      afficherAccueil();
+    } }, '⟳ Actualiser');
+  }
+
   async function carte() {
     const cat = await catalogue();
     const locales = await fiches();
     const photographiees = new Set(locales.map(f => f.valeurs.REF_EXISTANTE).filter(Boolean));
     const avecPhoto = cat.filter(p => p.PHOTO || photographiees.has(p.ID)).length;
     const attente = locales.filter(f => f.statut === 'finalisee').length;
+    const connecte = !!Reglages.lire().url;
+    const quand = dateMajCatalogue();
     return h('section', { class: 'carte-form' },
       h('div', {},
         h('h2', {}, 'Recensement produits'),
         h('p', { class: 'discret' }, cat.length
           ? `Catalogue : ${cat.length} réf. · ${avecPhoto} avec photo` + (attente ? ` · ${attente} à envoyer` : '')
-          : 'Catalogue non chargé : Paramètres > Importer un fichier, ou serveur')),
-      h('button', { class: 'btn primaire', onclick: () => ouvrir() }, '📷 Recenser'));
+          : connecte ? 'Catalogue pas encore chargé sur cet appareil.' : 'Catalogue non chargé : scannez d\'abord le QR code de connexion.'),
+        cat.length && quand ? h('p', { class: 'discret' }, `Catalogue mis à jour ${quand}`) : null),
+      h('div', { class: 'carte-actions' },
+        h('button', { class: 'btn primaire', onclick: () => ouvrir() }, '📷 Recenser'),
+        connecte ? boutonActualiser() : null));
   }
 
   /* ---------- Écran de recensement ---------- */
@@ -460,6 +486,7 @@ const Recensement = (() => {
   });
 
   return { carte, nbAEnvoyer, envoyer, telechargerCatalogue, importerCatalogue, catalogue, nomSysteme, formatNormalise,
-    segmentFacing, SEGMENTS: SEGMENTS.map(s => ({ cat: s.cat, nom: s.nom })), miniatures, telechargerMiniatures, enregistrerMiniature };
+    segmentFacing, SEGMENTS: SEGMENTS.map(s => ({ cat: s.cat, nom: s.nom })), miniatures, telechargerMiniatures, enregistrerMiniature,
+    dateMajCatalogue, boutonActualiser };
 })();
 window.Recensement = Recensement;
