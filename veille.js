@@ -73,6 +73,15 @@ const Veille = (() => {
   // avec les coordonnées GPS relevées lors des visites Kobo.
   async function initialiserReferentiels() {
     const r = Reglages.lire();
+    if (!navigator.onLine) throw new Error('Pas de réseau : réessayez une fois connecté.');
+    // Les onglets Magasins / Merchandisers n'existent qu'à partir du script serveur 2.0
+    const ping = await appelServeur(r.url, { action: 'ping', jeton: r.jeton });
+    if (!ping.ok) throw new Error(ping.erreur || 'serveur injoignable');
+    if (!ping.version || Number(ping.version) < 2) {
+      throw new Error(`Le script Google déployé est en version ${ping.version || 'ancienne'} : la version 2.0 est nécessaire. `
+        + 'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON), '
+        + 'puis Déployer > Gérer les déploiements > ✏ Modifier > Version : « Nouvelle version » > Déployer. Recommencez ensuite.');
+    }
     const liste = [];
     for (const m of magasinsKobo()) {
       const hk = await DB.histLire(`gms|${m.cle}`);
@@ -84,6 +93,10 @@ const Veille = (() => {
       merchandisers: merchKobo().map(([code, nom]) => ({ code, nom })) });
     if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
     await telechargerReferentiels();
+    if (!liste.some(x => x.lat)) {
+      // Pas d'historique Kobo sur cet appareil : les magasins sont créés sans coordonnées GPS
+      toast('Aucune coordonnée GPS trouvée sur cet appareil (historique Kobo absent) : renseignez LATITUDE / LONGITUDE dans l\'onglet Magasins.', 8000);
+    }
     return { magasins: j.magasinsAjoutes, merchandisers: j.merchandisersAjoutes, avecGps: liste.filter(x => x.lat).length, total: liste.length };
   }
 

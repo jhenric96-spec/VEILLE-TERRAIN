@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.14.0';
+const VERSION_APP = '1.14.1';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -1451,6 +1451,8 @@ function blocReferentiels(r) {
       : 'Liste en service : ancien formulaire Kobo (onglets « Magasins » et « Merchandisers » pas encore créés).';
   };
   majEtat();
+  const resultat = h('div', { class: 'diagnostic', hidden: true });
+  const montrer = (ok, texte) => { resultat.hidden = false; resultat.className = 'diagnostic ' + (ok ? 'ok' : 'ko'); resultat.textContent = texte; };
   return h('div', { class: 'champ' },
     h('span', { class: 'champ-lib' }, '🏬 Magasins et merchandisers'),
     h('small', { class: 'aide' }, 'Gérés dans les onglets « Magasins » et « Merchandisers » de la Google Sheet : une ligne ajoutée = un magasin ou un '
@@ -1459,13 +1461,19 @@ function blocReferentiels(r) {
     etat,
     h('button', { class: 'btn', onclick: async ev => {
       const b = ev.currentTarget; b.disabled = true; b.textContent = 'Envoi en cours…';
+      resultat.hidden = true;
       try {
         const res = await Veille.initialiserReferentiels();
-        toast(`Onglets à jour : ${res.magasins} magasin(s) et ${res.merchandisers} merchandiser(s) ajouté(s) ; GPS connu pour ${res.avecGps}/${res.total} magasins`, 8000);
-      } catch (e) { toast('Échec : ' + e.message, 6000); }
+        montrer(true, `✓ Onglets à jour dans la Google Sheet : ${res.magasins} magasin(s) et ${res.merchandisers} merchandiser(s) ajouté(s) `
+          + `(GPS connu pour ${res.avecGps}/${res.total} magasins). Les téléphones les recevront à leur prochaine actualisation.`);
+      } catch (e) {
+        const msg = /Action inconnue/i.test(e.message) ? 'Le script Google déployé est une ancienne version : recollez la dernière version de Code.gs puis déployez une « Nouvelle version ».' : e.message;
+        montrer(false, '✗ ' + msg);
+      }
       b.disabled = false; b.textContent = 'Créer / compléter les onglets depuis Kobo';
       majEtat();
-    } }, 'Créer / compléter les onglets depuis Kobo'));
+    } }, 'Créer / compléter les onglets depuis Kobo'),
+    resultat);
 }
 
 function blocQrConnexion(r) {
