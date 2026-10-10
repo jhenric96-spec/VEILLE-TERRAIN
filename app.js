@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.11.0';
+const VERSION_APP = '1.11.1';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -484,7 +484,7 @@ async function afficherAccueil() {
 /* Verrou des paramètres : seul le responsable y accède. Le code n'est jamais stocké en clair :
    seule son empreinte PBKDF2-SHA256 figure ici (pour la changer : outils\changer-code-parametres.ps1). */
 const VERROU = { sel: '232e4e7cbdda44c040da061c2ce86655', iterations: 150000, empreinte: 'ad935e8fe0c9dd7c005545b1105a8b8c908d7832085e252e393940d276fd21dd' };
-const DUREE_DEVERROUILLAGE = 10 * 60 * 1000;   // reste ouvert 10 minutes, jamais mémorisé au-delà de la session
+const DUREE_DEVERROUILLAGE = 60 * 1000;   // reste ouvert 1 minute, jamais mémorisé au-delà de la session
 let deverrouilleJusqua = 0, essaisRates = 0, bloqueJusqua = 0;
 
 async function empreinteCode(code) {
@@ -499,6 +499,15 @@ function ouvrirReglages() {
   if (!(window.crypto && crypto.subtle)) return toast('Paramètres indisponibles : ouvrez l\'application par son adresse https', 6000);
   const champ = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Code des paramètres', 'aria-label': 'Code des paramètres' });
   const erreur = h('small', { class: 'avert', hidden: true });
+  // Afficher / masquer le code saisi, pour éviter les fautes de frappe
+  const voir = h('button', { type: 'button', class: 'btn voir-code', 'aria-label': 'Afficher le code', 'aria-pressed': 'false', onclick: () => {
+    const visible = champ.type === 'password';
+    champ.type = visible ? 'text' : 'password';
+    voir.textContent = visible ? '🙈 Masquer' : '👁 Afficher';
+    voir.setAttribute('aria-label', visible ? 'Masquer le code' : 'Afficher le code');
+    voir.setAttribute('aria-pressed', String(visible));
+    champ.focus();
+  } }, '👁 Afficher');
   const valider = async () => {
     if (Date.now() < bloqueJusqua) {
       erreur.hidden = false; erreur.textContent = `Trop d'essais : réessayez dans ${Math.ceil((bloqueJusqua - Date.now()) / 1000)} s.`;
@@ -520,8 +529,8 @@ function ouvrirReglages() {
   const voile = h('div', { class: 'voile centre' },
     h('div', { class: 'feuille', role: 'dialog', 'aria-label': 'Paramètres verrouillés' },
       h('h3', {}, '🔒 Paramètres verrouillés'),
-      h('p', { class: 'discret' }, 'Réservé au responsable de la veille. Les merchandisers n\'en ont pas besoin.'),
-      champ, erreur,
+      h('div', { class: 'mot-de-passe' }, champ, voir),
+      erreur,
       h('div', { class: 'actions-bas' },
         h('button', { class: 'btn', onclick: () => voile.remove() }, 'Annuler'),
         h('button', { class: 'btn primaire', onclick: valider }, 'Déverrouiller'))));

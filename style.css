@@ -105,7 +105,9 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
 /* Paramètres */
 .reglages .champ { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
 .reglages input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--bord); border-radius: 8px; background: var(--surface); }
-.feuille input[type="password"] { min-height: 46px; padding: 8px 12px; border: 1px solid var(--bord); border-radius: 8px; background: var(--fond); font-size: 1rem; width: 100%; }
+.mot-de-passe { display: flex; gap: 8px; align-items: stretch; }
+.mot-de-passe input { flex: 1; min-width: 0; min-height: 46px; padding: 8px 12px; border: 1px solid var(--bord); border-radius: 8px; background: var(--fond); font-size: 1rem; }
+.mot-de-passe .voir-code { flex-shrink: 0; white-space: nowrap; }
 .qr-connexion summary { cursor: pointer; }
 .qr-connexion small.avert { display: block; }
 .qr-connexion[open] { gap: 10px; }
