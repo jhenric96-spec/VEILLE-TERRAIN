@@ -85,6 +85,9 @@ const Recensement = (() => {
       NOM_SYSTEME: p.NOM_SYSTEME || nomSysteme(p), CODE_BARRES: String(p.CODE_BARRES || ''), STATUT: p.STATUT || '',
       // Lien avec l'ancien formulaire Kobo : sert à préremplir la veille avec l'historique Kobo
       KOBO_PRESENCE: p.KOBO_PRESENCE || '', KOBO_PRIX: p.KOBO_PRIX || '',
+      // Fourchette de prix : saisie dans le Catalogue (PRIX_MIN / PRIX_MAX) ou prix du marché calculé par le serveur
+      PRIX_MIN: Number(String(p.PRIX_MIN || '').replace(/\s/g, '')) || '', PRIX_MAX: Number(String(p.PRIX_MAX || '').replace(/\s/g, '')) || '',
+      PRIX_MARCHE: p.PRIX_MARCHE && Number(p.PRIX_MARCHE.prix) > 0 ? { prix: Number(p.PRIX_MARCHE.prix), n: Number(p.PRIX_MARCHE.n) || 0 } : null,
       // Un jus n'est complet qu'avec la photo de ses ingrédients (classement par teneur en fruits).
       PHOTO: !!p.PHOTO && (!JUS.includes(p.CATEGORIE) || !!p.PHOTO_INGREDIENTS),
     }));

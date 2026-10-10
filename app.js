@@ -3,8 +3,9 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.13.0';
+const VERSION_APP = '1.14.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
+const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
 /* ------------------------------------------------------------------ */
@@ -564,6 +565,7 @@ function afficherReglages() {
         } }, 'Enregistrer'),
         h('button', { class: 'btn', onclick: testerServeur }, 'Tester la connexion')),
       blocQrConnexion(r),
+      blocReferentiels(r),
       h('hr'),
       h('h3', {}, 'Facings (Veille GMS)'),
       h('label', { class: 'case' }, h('input', { type: 'radio', name: 'facing', checked: (r.facingMode || 'photo') === 'photo',
@@ -676,8 +678,8 @@ async function testerServeur() {
   if (j.ok) {
     Reglages.maj(x => { x.url = url; x.jeton = jeton; });
     // Un ancien déploiement répond au test mais ne connaît ni le catalogue ni la veille
-    if (!j.version) {
-      return afficher(false, 'Clé acceptée, mais le script déployé est une ancienne version',
+    if (!j.version || Number(j.version) < VERSION_SERVEUR_MIN) {
+      return afficher(false, `Clé acceptée, mais le script déployé est une ancienne version (${j.version || 'avant 1.9'} ; ${VERSION_SERVEUR_MIN.toFixed(1)} requise)`,
         'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON).',
         'Puis Déployer > Gérer les déploiements > ✏ Modifier > Version : « Nouvelle version » > Déployer. L\'adresse reste la même.',
         'Revenez ensuite ici et touchez à nouveau « Tester la connexion ».');
@@ -700,7 +702,7 @@ async function testerServeur() {
     try {
       if (window.Recensement) { await Recensement.telechargerCatalogue({ silencieux: true }); n = (await Recensement.catalogue()).length; }
       await telechargerHistorique({ force: true });
-      if (window.Veille) await Veille.telechargerHistorique({ force: true });
+      if (window.Veille) { await Veille.telechargerReferentiels(); await Veille.telechargerHistorique({ force: true }); }
     } catch (e) { /* le détail est donné ci-dessous */ }
     majEtatHistorique();
     return afficher(n > 0, n > 0 ? `Connexion réussie ✓ — catalogue chargé sur cet appareil : ${n} référence(s).` : 'Connexion réussie, mais le catalogue n\'a pas pu être téléchargé',
@@ -1313,6 +1315,21 @@ async function appelServeur(url, donnees) {
 }
 
 let envoiEnCours = false;
+// Supervision : le téléphone indique au serveur ses fiches en attente, sa version et l'état de son catalogue
+// (onglet « Appareils »). Une fiche bloquée sur un téléphone devient ainsi visible du responsable.
+async function signalerEtatAppareil(r) {
+  if (!r.url || !navigator.onLine) return;
+  try {
+    const fiches = await DB.tout();
+    const merch = ((Reglages.lire().memo || {})['veille-gms'] || {}).MERCH;
+    await appelServeur(r.url, { action: 'etatAppareil', jeton: r.jeton, etat: {
+      APPAREIL: idAppareil(), MERCHANDISEUR: window.Veille && merch ? Veille.nomMerch(merch) : '', VERSION_APP,
+      BROUILLONS: fiches.filter(f => f.statut === 'brouillon').length, A_ENVOYER: fiches.filter(f => f.statut === 'finalisee').length,
+      CATALOGUE_REFS: window.Recensement ? (await Recensement.catalogue()).length : '', CATALOGUE_MAJ: Reglages.lire().catalogueMaj || '',
+    } });
+  } catch (e) { /* sans conséquence : réessayé à la prochaine synchronisation */ }
+}
+
 // actualiser : à l'ouverture / actualisation de la page, l'historique des visites est rechargé sans attendre 6 heures
 async function synchroniser({ silencieux = false, actualiser = false } = {}) {
   if (envoiEnCours) return;
@@ -1346,7 +1363,8 @@ async function synchroniser({ silencieux = false, actualiser = false } = {}) {
   else if (ok || !silencieux) toast(ok ? `${ok} fiche(s) envoyée(s) ✓` : 'Rien à envoyer');
   await telechargerHistorique();
   if (window.Recensement) await Recensement.telechargerCatalogue();
-  if (window.Veille) await Veille.telechargerHistorique({ force: actualiser });
+  if (window.Veille) { await Veille.telechargerReferentiels(); await Veille.telechargerHistorique({ force: actualiser }); }
+  await signalerEtatAppareil(r);
   if (accueilAffiche()) afficherAccueil();
 }
 
@@ -1422,6 +1440,34 @@ function canevasQr(texte, legende) {
   return cv;
 }
 
+// Magasins et merchandisers : onglets de la Google Sheet, créés une première fois à partir des listes Kobo.
+function blocReferentiels(r) {
+  if (!r.url || !window.Veille) return null;
+  const etat = h('small', { class: 'aide' }, '…');
+  const majEtat = async () => {
+    const x = await DB.diversLire('referentiels');
+    etat.textContent = x && x.magasins && x.magasins.length
+      ? `Liste en service : Google Sheet — ${x.magasins.length} magasin(s) (${x.magasins.filter(m => m.lat).length} avec GPS), ${x.merchandisers.length} merchandiser(s).`
+      : 'Liste en service : ancien formulaire Kobo (onglets « Magasins » et « Merchandisers » pas encore créés).';
+  };
+  majEtat();
+  return h('div', { class: 'champ' },
+    h('span', { class: 'champ-lib' }, '🏬 Magasins et merchandisers'),
+    h('small', { class: 'aide' }, 'Gérés dans les onglets « Magasins » et « Merchandisers » de la Google Sheet : une ligne ajoutée = un magasin ou un '
+      + 'merchandiser de plus (le code se crée tout seul) ; ACTIF = NON le masque. LATITUDE / LONGITUDE permettent de signaler une visite '
+      + `saisie à plus de 300 m du magasin.`),
+    etat,
+    h('button', { class: 'btn', onclick: async ev => {
+      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Envoi en cours…';
+      try {
+        const res = await Veille.initialiserReferentiels();
+        toast(`Onglets à jour : ${res.magasins} magasin(s) et ${res.merchandisers} merchandiser(s) ajouté(s) ; GPS connu pour ${res.avecGps}/${res.total} magasins`, 8000);
+      } catch (e) { toast('Échec : ' + e.message, 6000); }
+      b.disabled = false; b.textContent = 'Créer / compléter les onglets depuis Kobo';
+      majEtat();
+    } }, 'Créer / compléter les onglets depuis Kobo'));
+}
+
 function blocQrConnexion(r) {
   if (!r.url || !r.jeton) {
     return h('p', { class: 'discret' }, 'Une fois la connexion réussie, un QR code apparaîtra ici pour connecter les téléphones des merchandisers.');
@@ -1470,13 +1516,15 @@ async function importerConnexion() {
   if (r.url && (r.url !== cfg.url || r.jeton !== cfg.jeton)
     && !confirm('Cet appareil est déjà relié à un autre serveur. Le remplacer par celui du QR code ?')) return;
   Reglages.maj(x => { x.url = cfg.url; x.jeton = cfg.jeton; x.histMaj = null; x.histVeilleMaj = null; });
+  // Liste des merchandisers à jour (onglet Merchandisers de la Google Sheet) avant de demander qui utilise le téléphone
+  if (window.Veille) { await Veille.telechargerReferentiels(); await Veille.chargerReferentiels(); }
   choisirUtilisateur();
 }
 
 function choisirUtilisateur() {
   const F = FORMS.gms;
   const champ = F && F.sections[0].champs.find(c => c.t === 'select_one' && !c.casc);
-  const noms = champ ? F.listes[champ.liste] : [];
+  const noms = window.Veille ? Veille.merchandisers() : champ ? F.listes[champ.liste] : [];
   const fermer = async (code, nom) => {
     voile.remove();
     if (code) {
@@ -1484,7 +1532,7 @@ function choisirUtilisateur() {
         x.appareil = 'TEL-' + sansAccents(nom).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '');
         x.memo = x.memo || {};
         x.memo['veille-gms'] = Object.assign({}, x.memo['veille-gms'], { MERCH: code });
-        x.memo.gms = Object.assign({}, x.memo.gms, { [champ.n]: code });
+        if (champ) x.memo.gms = Object.assign({}, x.memo.gms, { [champ.n]: code });
       });
     }
     toast('Connexion réussie ✓ — téléchargement du catalogue…', 8000);

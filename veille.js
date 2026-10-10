@@ -25,21 +25,67 @@ const Veille = (() => {
   const EMPLACEMENT_PRINCIPAL = EMPLACEMENTS[0];
   const aSecondaire = (f, c) => ((f.emp || {})[c] || []).some(e => e !== EMPLACEMENT_PRINCIPAL) || ((V && V.empOuverts && V.empOuverts[c]) || []).length > 0;
 
-  // La liste des magasins et des merchandisers vient du formulaire GMS importé de Kobo.
+  /* Magasins et merchandisers : onglets « Magasins » et « Merchandisers » de la Google Sheet (référentiels),
+     à défaut les listes de l'ancien formulaire Kobo. Les codes magasin restent ceux de Kobo (CANAL/ENSEIGNE/MAGASIN),
+     ce qui garde le lien avec l'historique. */
   const F = () => FORMS.gms;
   const modeFacing = () => Reglages.lire().facingMode || 'photo';
+  const SEUIL_GPS_M = 300;            // au-delà, la position est signalée comme éloignée du magasin
+  const ECART_PRIX = 0.3;             // fourchette automatique : ±30 % autour du prix du marché ou du dernier prix
+  let REF = null;                     // référentiels téléchargés { magasins: [...], merchandisers: [...] }
+  async function chargerReferentiels() { REF = (await DB.diversLire('referentiels')) || null; magasinsCache = null; }
   const champMerch = () => F().sections[0].champs.find(c => c.t === 'select_one' && !c.casc);
-  const merchandisers = () => F().listes[champMerch().liste] || [];
-  const nomMerch = code => ((merchandisers().find(m => m[0] === code) || [])[1]) || '';
-  let magasinsCache = null;
-  function magasins() {
-    if (!magasinsCache) magasinsCache = F().cascade.options.map(o => ({
-      cle: o.map(p => p[1]).join('/'), nom: o[o.length - 1][2], chemin: o.slice(0, -1).map(p => p[2]),
-      recherche: o.cle,
+  const merchKobo = () => F().listes[champMerch().liste] || [];
+  const merchandisers = () => (REF && REF.merchandisers && REF.merchandisers.length ? REF.merchandisers.map(m => [m.code, m.nom]) : merchKobo());
+  const nomMerch = code => ((merchandisers().find(m => m[0] === code) || merchKobo().find(m => m[0] === code) || [])[1]) || '';
+  let magasinsCache = null, magasinsKoboCache = null;
+  function magasinsKobo() {
+    if (!magasinsKoboCache) magasinsKoboCache = F().cascade.options.map(o => ({
+      cle: o.map(p => p[1]).join('/'), nom: o[o.length - 1][2], chemin: o.slice(0, -1).map(p => p[2]), recherche: o.cle, lat: null, lon: null,
     }));
+    return magasinsKoboCache;
+  }
+  function magasins() {
+    if (!magasinsCache) {
+      magasinsCache = REF && REF.magasins && REF.magasins.length
+        ? REF.magasins.map(m => ({ cle: m.code, nom: m.magasin, chemin: [m.canal, m.enseigne].filter(Boolean),
+            recherche: sansAccents([m.canal, m.enseigne, m.magasin].join(' ')), lat: m.lat, lon: m.lon }))
+          .sort((a, b) => a.nom.localeCompare(b.nom, 'fr'))
+        : magasinsKobo();
+    }
     return magasinsCache;
   }
-  const magasin = cle => magasins().find(m => m.cle === cle);
+  // Recherche aussi dans la liste Kobo : une ancienne visite peut concerner un magasin désactivé depuis
+  const magasin = cle => magasins().find(m => m.cle === cle) || magasinsKobo().find(m => m.cle === cle);
+
+  async function telechargerReferentiels() {
+    const r = Reglages.lire();
+    if (!r.url || !navigator.onLine) return;
+    try {
+      const j = await appelServeur(r.url, { action: 'referentiels', jeton: r.jeton });
+      if (!j.ok || (!j.magasins && !j.merchandisers)) return;   // onglets pas encore créés : listes Kobo conservées
+      await DB.diversMettre('referentiels', { magasins: j.magasins || [], merchandisers: j.merchandisers || [], maj: maintenant() });
+      await chargerReferentiels();
+    } catch (e) { /* nouvel essai à la prochaine synchronisation */ }
+  }
+
+  // Bouton des paramètres : crée / complète les onglets Magasins et Merchandisers à partir des listes Kobo,
+  // avec les coordonnées GPS relevées lors des visites Kobo.
+  async function initialiserReferentiels() {
+    const r = Reglages.lire();
+    const liste = [];
+    for (const m of magasinsKobo()) {
+      const hk = await DB.histLire(`gms|${m.cle}`);
+      const [lat, lon] = String((hk && hk.valeurs.LOCALISATION_PDV) || '').split(' ').map(Number);
+      liste.push({ code: m.cle, canal: m.chemin[0] || '', enseigne: m.chemin[1] || m.chemin[0] || '', magasin: m.nom,
+        lat: lat && Math.abs(lat) <= 90 ? lat : '', lon: lon && Math.abs(lon) <= 180 ? lon : '' });
+    }
+    const j = await appelServeur(r.url, { action: 'initReferentiels', jeton: r.jeton, magasins: liste,
+      merchandisers: merchKobo().map(([code, nom]) => ({ code, nom })) });
+    if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
+    await telechargerReferentiels();
+    return { magasins: j.magasinsAjoutes, merchandisers: j.merchandisersAjoutes, avecGps: liste.filter(x => x.lat).length, total: liste.length };
+  }
 
   let V = null;   // visite en cours : { fiche, cat, parId, etape, montrer, minuteur }
 
@@ -88,6 +134,7 @@ const Veille = (() => {
   /* ---------- Accueil ---------- */
 
   async function carte() {
+    await chargerReferentiels();
     const cat = await Recensement.catalogue();
     const r = Reglages.lire();
     const quand = Recensement.dateMajCatalogue();
@@ -98,7 +145,7 @@ const Veille = (() => {
           quand ? h('p', { class: 'discret' }, `Catalogue mis à jour ${quand}`) : null),
         h('div', { class: 'carte-actions' },
           h('button', { class: 'btn primaire', onclick: nouvelle }, '+ Nouvelle visite'),
-          Recensement.boutonActualiser(() => telechargerHistorique({ force: true }))));
+          Recensement.boutonActualiser(async () => { await telechargerReferentiels(); await telechargerHistorique({ force: true }); })));
     }
     return h('section', { class: 'carte-form' },
       h('div', {}, h('h2', {}, TITRE),
@@ -136,6 +183,7 @@ const Veille = (() => {
   }
 
   async function ouvrir(id, nouvelleVisite = false) {
+    await chargerReferentiels();
     const fiche = await DB.lire(id);
     fiche.equip = fiche.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };   // visites créées avant l'étape Équipements
     const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('('));
@@ -386,6 +434,12 @@ const Veille = (() => {
       V.gpsMsg ? h('div', { class: 'discret' }, V.gpsMsg) : null,
       v.GPS ? h('div', {}, h('strong', {}, `${lat.toFixed(6)}, ${lon.toFixed(6)}`), ` · précision ±${Math.round(acc)} m`) : h('div', { class: 'discret' }, 'Aucune position.'),
       v.GPS && acc > 50 ? h('div', { class: 'avert' }, 'Précision faible : sortez du bâtiment ou réessayez.') : null,
+      (() => {
+        const dist = ecartGps(f);
+        if (dist === null || dist <= SEUIL_GPS_M) return null;
+        return h('div', { class: 'avert' }, `⚠ Position à ${dist >= 1000 ? (dist / 1000).toFixed(1).replace('.', ',') + ' km' : dist + ' m'} du magasin `
+          + `${m.nom}. Vérifiez que vous êtes dans le bon magasin, ou recapturez la position une fois sur place.`);
+      })(),
       h('button', { class: 'btn', 'data-act': 'gps' }, 'Capturer la position')));
 
     blocs.push(h('div', { class: 'champ' }, h('span', { class: 'champ-lib' }, 'Date', h('span', { class: 'req' }, ' *')),
@@ -418,6 +472,37 @@ const Veille = (() => {
       blocs.push(h('div', { class: 'bandeau-repris' }, 'Pas de visite récente connue pour ce magasin : ajoutez les produits présents dans chaque catégorie.'));
     }
     return h('section', {}, blocs);
+  }
+
+  /* ---------- Fourchettes de prix ----------
+     1. PRIX_MIN / PRIX_MAX saisis dans l'onglet Catalogue (prioritaires) ;
+     2. sinon prix du marché (médiane d'au moins 3 magasins, calculée par le serveur) ±30 % ;
+     3. sinon dernier prix relevé dans ce magasin ±30 %. */
+  function fourchette(id, l, p) {
+    p = p || (V && V.parId[id]);
+    l = l || (V && V.fiche.lignes[id]);
+    if (!p) return null;
+    const arrondi = x => Math.round(x / 5) * 5;
+    if (p.PRIX_MIN > 0 && p.PRIX_MAX > 0) return { min: p.PRIX_MIN, max: p.PRIX_MAX, source: 'catalogue' };
+    if (p.PRIX_MARCHE && p.PRIX_MARCHE.prix > 0) return { min: arrondi(p.PRIX_MARCHE.prix * (1 - ECART_PRIX)), max: arrondi(p.PRIX_MARCHE.prix * (1 + ECART_PRIX)), source: 'marché' };
+    if (l && l.repris && Number(l.repris.prix) > 0) return { min: arrondi(l.repris.prix * (1 - ECART_PRIX)), max: arrondi(l.repris.prix * (1 + ECART_PRIX)), source: 'dernier prix' };
+    return null;
+  }
+  function horsFourchette(id, l, p) {
+    l = l || (V && V.fiche.lignes[id]);
+    const prix = Number(l && l.prix);
+    if (!l || l.present !== true || !(prix > 0)) return null;
+    const fo = fourchette(id, l, p);
+    return fo && (prix < fo.min || prix > fo.max) ? fo : null;
+  }
+  const texteFourchette = fo => `${fo.min}–${fo.max} F`;
+
+  // Distance (m) entre la position relevée et les coordonnées enregistrées du magasin ; null si l'une manque
+  function ecartGps(f) {
+    const m = magasin(f.valeurs.MAGASIN);
+    if (!m || !m.lat || !m.lon || !f.valeurs.GPS) return null;
+    const [lat, lon] = String(f.valeurs.GPS).split(' ').map(Number);
+    return Math.round(distance(lat, lon, m.lat, m.lon));
   }
 
   async function choisirMagasin(cle) {
@@ -598,9 +683,13 @@ const Veille = (() => {
     const absent = l.present === false;
     // Prix : obligatoire et > 0 ; facing rayon : obligatoire (0 admis si le produit n'est qu'en emplacement secondaire)
     const manque = champ => champ === 'prix' ? !(Number(l.prix) > 0) : champ === 'facing' ? vide(l.facing) : false;
-    const mini = (lib, champ, info) => h('label', { class: 'mini' + (V.montrer && manque(champ) ? ' manque' : '') }, h('span', { class: 'mini-lib' }, lib),
+    const hors = horsFourchette(id);
+    const mini = (lib, champ, info) => h('label', { class: 'mini' + (V.montrer && manque(champ) ? ' manque' : '') + (champ === 'prix' && hors ? ' hors' : '') },
+      h('span', { class: 'mini-lib' }, lib),
       h('input', { type: 'text', inputmode: 'numeric', value: l[champ] ?? '', 'data-ref': id, 'data-champ': champ, autocomplete: 'off' }),
-      info ? h('small', { class: 'mini-info' }, info) : null);
+      champ === 'prix'
+        ? h('small', { class: 'mini-info', 'data-info': info || '' }, hors ? texteFourchette(hors) : info || '')
+        : info ? h('small', { class: 'mini-info' }, info) : null);
     return h('div', { class: 'produit' + (absent ? ' absent' : '') },
       h('div', { class: 'produit-tete' }, vignetteProduit(id), h('span', { class: 'produit-nom' }, court),
         h('button', { class: 'btn petit' + (absent ? ' danger' : ''), 'data-act': 'absent', 'data-v': id },
@@ -680,6 +769,12 @@ const Veille = (() => {
       toucher(t.dataset.ref);
       sauver();
       majNav();
+      if (t.dataset.champ === 'prix') {     // signalement immédiat d'un prix hors fourchette, sans redessiner
+        const lab = t.closest('.mini'), info = lab.querySelector('.mini-info');
+        const hors = horsFourchette(t.dataset.ref);
+        lab.classList.toggle('hors', !!hors);
+        if (info) info.textContent = hors ? texteFourchette(hors) : info.dataset.info || '';
+      }
       if (t.dataset.champ === 'facing') {   // totaux (rayon principal) mis à jour sans redessiner : le curseur reste dans le champ
         const totaux = totauxFacing(V.fiche, V.parId);
         V.corps.querySelectorAll('[data-total]').forEach(el => { el.textContent = String(totaux[el.dataset.total] || 0); });
@@ -777,6 +872,19 @@ const Veille = (() => {
       return;
     }
     const f = V.fiche;
+    // Prix hors fourchette : signalés et confirmés par le merchandiser (une faute de frappe est ainsi rattrapée)
+    const hors = Object.keys(f.lignes).filter(id => V.parId[id] && !f.absentes[V.parId[id].CATEGORIE])
+      .map(id => ({ id, fo: horsFourchette(id) })).filter(x => x.fo);
+    if (hors.length) {
+      const detail = hors.slice(0, 8).map(x => `• ${V.parId[x.id].NOM_SYSTEME} : ${f.lignes[x.id].prix} F (habituel ${texteFourchette(x.fo)})`).join('\n');
+      const ok = confirm(`${hors.length} prix hors fourchette :\n${detail}${hors.length > 8 ? '\n…' : ''}\n\n`
+        + 'OK = ces prix sont justes (ils seront signalés au responsable)\nAnnuler = revenir pour les corriger');
+      if (!ok) {
+        const c = V.parId[hors[0].id].CATEGORIE;
+        aller(CATEGORIES.indexOf(c) + 1);
+        return;
+      }
+    }
     f.valeurs.FIN = maintenant();
     f.statut = 'finalisee';
     f.finaliseLe = maintenant();
@@ -831,22 +939,28 @@ const Veille = (() => {
       PREREMPLI_DEPUIS: f.prerempli ? f.prerempli.date : '', PREREMPLI_SOURCE: f.prerempli ? f.prerempli.source : '',
       PRIX_INCHANGES_PCT: repris.length ? Math.round(100 * inchanges.length / repris.length) : '',
       DEBUT: f.valeurs.DEBUT || '', FIN: f.valeurs.FIN || '',
+      // Supervision : durée de saisie, écart GPS avec le magasin, prix signalés
+      DUREE_MIN: f.valeurs.DEBUT && f.valeurs.FIN ? Math.max(0, Math.round((new Date(f.valeurs.FIN) - new Date(f.valeurs.DEBUT)) / 60000)) : '',
+      DISTANCE_MAGASIN_M: ecartGps(f) ?? '',
+      ALERTE_GPS: ecartGps(f) === null ? '' : ecartGps(f) > SEUIL_GPS_M ? 'OUI' : 'NON',
+      NB_PRIX_HORS_FOURCHETTE: lignes.filter(([id, l]) => !f.absentes[parId[id].CATEGORIE] && horsFourchette(id, l, parId[id])).length,
     };
     // Facing total par segment (base de la part de linéaire) ; vide tant que les facings viennent des photos
     const totaux = totauxFacing(f, parId);
     for (const s of Recensement.SEGMENTS) visite['FACING_TOTAL ' + s.nom] = modeFacing() === 'saisie' ? (totaux[s.nom] || 0) : '';
     const releves = lignes.filter(([id]) => !f.absentes[parId[id].CATEGORIE]).map(([id, l]) => {
       const p = parId[id];
+      const hors = horsFourchette(id, l, p);
+      // Format allégé (11 colonnes) : magasin, merchandiser, marque, format… se retrouvent dans les onglets
+      // Visites (_id_visite) et Catalogue (REF_ID). Le volume de la feuille est divisé par deux.
       return {
-        _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN: m.nom, MAGASIN_CODE: f.valeurs.MAGASIN, CANAL: visite.CANAL, ENSEIGNE: visite.ENSEIGNE,
-        MERCHANDISEUR: visite.MERCHANDISEUR, REF_ID: id, NOM_SYSTEME: p.NOM_SYSTEME, CATEGORIE: p.CATEGORIE, MARQUE: p.MARQUE, GAMME: p.GAMME,
-        FORMAT: p.FORMAT, EMBALLAGE: p.EMBALLAGE, UNITES_PAR_LOT: p.UNITES_PAR_LOT, SEGMENT_FACING: Recensement.segmentFacing(p),
+        _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN_CODE: f.valeurs.MAGASIN, REF_ID: id, SEGMENT_FACING: Recensement.segmentFacing(p),
         PRESENT: l.present === true ? 'OUI' : 'NON', PRIX: l.present === true ? l.prix : '',
+        PRIX_REPRIS: l.present !== true ? '' : l.repris ? (String(l.prix) === String(l.repris.prix) ? 'INCHANGE' : 'MODIFIE') : 'NOUVEAU',
+        PRIX_ALERTE: hors ? `HORS FOURCHETTE ${hors.min}-${hors.max}` : '',
         // FACING = rayon principal, seul compté dans le facing total ; FACING_SECONDAIRE = autres emplacements
         FACING: l.present === true && modeFacing() === 'saisie' ? l.facing : '',
         FACING_SECONDAIRE: l.present === true && modeFacing() === 'saisie' ? (Number(l.facingSec) || 0) : '',
-        FACING_SOURCE: l.present === true ? visite.MODE_FACING : '',
-        PRIX_REPRIS: l.present !== true ? '' : l.repris ? (String(l.prix) === String(l.repris.prix) ? 'INCHANGE' : 'MODIFIE') : 'NOUVEAU',
       };
     });
     return { visite, releves };
@@ -870,6 +984,7 @@ const Veille = (() => {
   async function nbAEnvoyer() { return (await DB.tout()).filter(f => f.form === FORM && f.statut === 'finalisee').length; }
 
   async function envoyer(r) {
+    await chargerReferentiels();
     const cat = await Recensement.catalogue();
     let ok = 0;
     for (const f of (await DB.tout()).filter(x => x.form === FORM && x.statut === 'finalisee')) {
@@ -937,6 +1052,7 @@ const Veille = (() => {
   }
 
   return { FORM, TITRE, carte, resume, ouvrir, nouvelle, nbAEnvoyer, envoyer, telechargerHistorique, lignesExport, depuisKobo, derniereVisite,
+    telechargerReferentiels, initialiserReferentiels, chargerReferentiels, merchandisers, nomMerch, fourchette, horsFourchette,
     _etat: () => V, _problemes: () => problemes() };
 })();
 window.Veille = Veille;
