@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.9.0';
+const VERSION_APP = '1.10.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -503,6 +503,7 @@ function afficherReglages() {
           toast('Paramètres enregistrés'); afficherAccueil();
         } }, 'Enregistrer'),
         h('button', { class: 'btn', onclick: testerServeur }, 'Tester la connexion')),
+      blocQrConnexion(r),
       h('hr'),
       h('h3', {}, 'Facings (Veille GMS)'),
       h('label', { class: 'case' }, h('input', { type: 'radio', name: 'facing', checked: (r.facingMode || 'photo') === 'photo',
@@ -1331,6 +1332,137 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 
+/* ------------------------------------------------------------------ */
+/* Connexion d'un téléphone par QR code                                */
+/* ------------------------------------------------------------------ */
+
+// Adresse publique de l'application, utilisée dans le QR code quand on le génère depuis le PC (localhost).
+const ADRESSE_PUBLIQUE = 'https://jhenric96-spec.github.io/VEILLE-TERRAIN/';
+
+// Les informations de connexion sont placées après « # » : cette partie du lien n'est jamais envoyée au site.
+function lienConnexion(url, jeton) {
+  const local = location.protocol !== 'https:' || /^(localhost|127\.)/.test(location.hostname);
+  const base = local ? ADRESSE_PUBLIQUE : location.origin + location.pathname.replace(/index\.html$/, '');
+  const charge = btoa(unescape(encodeURIComponent(JSON.stringify({ u: url, k: jeton })))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${base}#connexion=${charge}`;
+}
+
+function lireLienConnexion(hash) {
+  const m = String(hash || '').match(/connexion=([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + '==='.slice((b64.length + 3) % 4)))));
+    return /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(j.u) && j.k ? { url: j.u, jeton: j.k } : null;
+  } catch (e) { return null; }
+}
+
+// QR code dessiné sur un canevas, avec marge blanche et légende (image à partager sur WhatsApp ou à imprimer)
+function canevasQr(texte, legende) {
+  const qr = qrcode(0, 'M');
+  qr.addData(texte);
+  qr.make();
+  const n = qr.getModuleCount(), marge = 4, px = 8, haut = 70, bas = 60;
+  const cote = (n + 2 * marge) * px;
+  const cv = document.createElement('canvas');
+  cv.width = cote; cv.height = cote + haut + bas;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#243e79'; g.font = 'bold 30px system-ui, sans-serif'; g.textAlign = 'center';
+  g.fillText('VEILLE TERRAIN', cote / 2, 45);
+  g.fillStyle = '#000';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect((c + marge) * px, haut + (r + marge) * px, px, px);
+  g.fillStyle = '#333'; g.font = '20px system-ui, sans-serif';
+  g.fillText(legende, cote / 2, haut + cote + 35);
+  return cv;
+}
+
+function blocQrConnexion(r) {
+  if (!r.url || !r.jeton) {
+    return h('p', { class: 'discret' }, 'Une fois la connexion réussie, un QR code apparaîtra ici pour connecter les téléphones des merchandisers.');
+  }
+  const lien = lienConnexion(r.url, r.jeton);
+  let cv;
+  try { cv = canevasQr(lien, 'Scanner avec l\'appareil photo du téléphone'); }
+  catch (e) { return h('p', { class: 'avert' }, 'QR code impossible à générer : ' + e.message); }
+  cv.className = 'qr-image';
+  const png = () => new Promise(res => cv.toBlob(res, 'image/png'));
+  const actions = [];
+  if (navigator.canShare) {
+    actions.push(h('button', { class: 'btn primaire', onclick: async () => {
+      const fichier = new File([await png()], 'connexion-veille-terrain.png', { type: 'image/png' });
+      try {
+        if (navigator.canShare({ files: [fichier] })) await navigator.share({ files: [fichier], title: 'Connexion VEILLE TERRAIN', text: 'Scannez ce code pour connecter l\'application VEILLE TERRAIN.' });
+        else await navigator.share({ title: 'Connexion VEILLE TERRAIN', url: lien });
+      } catch (e) { /* partage annulé */ }
+    } }, 'Partager (WhatsApp…)'));
+  }
+  actions.push(h('button', { class: 'btn', onclick: async () => {
+    const a = h('a', { href: URL.createObjectURL(await png()), download: 'connexion-veille-terrain.png' });
+    document.body.append(a); a.click(); a.remove();
+  } }, 'Télécharger l\'image'));
+  actions.push(h('button', { class: 'btn', onclick: async () => {
+    try { await navigator.clipboard.writeText(lien); toast('Lien copié'); } catch (e) { prompt('Copiez ce lien :', lien); }
+  } }, 'Copier le lien'));
+  return h('details', { class: 'champ qr-connexion' },
+    h('summary', { class: 'champ-lib' }, '📱 Connecter un autre téléphone (QR code)'),
+    h('small', { class: 'aide' }, 'Le merchandiser scanne ce code avec l\'appareil photo de son téléphone : l\'application s\'ouvre déjà connectée au serveur. '
+      + 'Il choisit son nom, le catalogue se télécharge, puis il installe l\'application (menu ⋮ > Installer).'),
+    cv,
+    h('div', { class: 'actions-bas' }, actions),
+    h('small', { class: 'avert' }, 'Ce code contient la clé d\'accès : partagez-le uniquement avec vos merchandisers. En cas de fuite, '
+      + 'changez la clé (ligne JETON du script, puis nouvelle version du déploiement), reconnectez cet appareil et partagez le nouveau code.'));
+}
+
+// À l'ouverture d'un lien de connexion (scan du QR code) : enregistre le serveur, demande qui utilise le téléphone,
+// puis télécharge le catalogue, l'historique et les photos.
+async function importerConnexion() {
+  const cfg = lireLienConnexion(location.hash);
+  if (!/connexion=/.test(location.hash)) return;
+  history.replaceState(history.state, '', location.pathname + location.search);   // retire la clé de la barre d'adresse
+  if (!cfg) { toast('Lien de connexion invalide : demandez un nouveau QR code', 6000); return; }
+  const r = Reglages.lire();
+  if (r.url && (r.url !== cfg.url || r.jeton !== cfg.jeton)
+    && !confirm('Cet appareil est déjà relié à un autre serveur. Le remplacer par celui du QR code ?')) return;
+  Reglages.maj(x => { x.url = cfg.url; x.jeton = cfg.jeton; x.histMaj = null; x.histVeilleMaj = null; });
+  choisirUtilisateur();
+}
+
+function choisirUtilisateur() {
+  const F = FORMS.gms;
+  const champ = F && F.sections[0].champs.find(c => c.t === 'select_one' && !c.casc);
+  const noms = champ ? F.listes[champ.liste] : [];
+  const fermer = async (code, nom) => {
+    voile.remove();
+    if (code) {
+      Reglages.maj(x => {
+        x.appareil = 'TEL-' + sansAccents(nom).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+        x.memo = x.memo || {};
+        x.memo['veille-gms'] = Object.assign({}, x.memo['veille-gms'], { MERCH: code });
+        x.memo.gms = Object.assign({}, x.memo.gms, { [champ.n]: code });
+      });
+    }
+    toast('Connexion réussie ✓ — téléchargement du catalogue…', 8000);
+    try {
+      if (window.Recensement) await Recensement.telechargerCatalogue({ silencieux: true });
+      await telechargerHistorique({ force: true });
+      if (window.Veille) await Veille.telechargerHistorique({ force: true });
+    } catch (e) { /* nouvel essai à la prochaine synchronisation */ }
+    const n = window.Recensement ? (await Recensement.catalogue()).length : 0;
+    const installee = matchMedia('(display-mode: standalone)').matches;
+    toast(n ? `Prêt ✓ ${n} références chargées.` + (installee ? '' : ' Installez l\'application : menu ⋮ > Installer l\'application.')
+      : 'Connecté, mais le catalogue n\'a pas pu être chargé : vérifiez le réseau puis ouvrez ⚙ Paramètres > Tester la connexion.', 9000);
+    if (accueilAffiche()) afficherAccueil();
+  };
+  const voile = h('div', { class: 'voile centre' },
+    h('div', { class: 'feuille', role: 'dialog', 'aria-label': 'Qui utilise ce téléphone ?' },
+      h('h3', {}, 'Appareil connecté ✓'),
+      h('p', {}, 'Qui utilise ce téléphone ?'),
+      h('div', { class: 'puces' }, noms.map(([code, nom]) => h('button', { type: 'button', onclick: () => fermer(code, nom) }, nom))),
+      h('button', { class: 'btn', onclick: () => fermer(null) }, 'Passer')));
+  document.body.append(voile);
+}
+
 // Import par adresse (usage sur PC) : index.html?importer=catalogue/catalogue.json,historique/historique-gms.json
 // Seuls des fichiers servis par l'application elle-même sont acceptés.
 async function importerDepuisAdresse() {
@@ -1353,4 +1485,4 @@ async function importerDepuisAdresse() {
   toast('Import — ' + bilan.join(' · '), 6000);
 }
 
-importerDepuisAdresse().then(afficherAccueil).then(() => synchroniser({ silencieux: true }));
+importerDepuisAdresse().then(afficherAccueil).then(importerConnexion).then(() => synchroniser({ silencieux: true }));

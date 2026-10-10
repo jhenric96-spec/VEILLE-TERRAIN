@@ -1,7 +1,7 @@
 // Mise en cache de l'application pour l'utiliser sans réseau.
 // Changer CACHE à chaque mise à jour des fichiers pour forcer le rafraîchissement sur les téléphones.
-const CACHE = 'collecte-terrain-v18';
-const FICHIERS = ['./', 'index.html', 'style.css', 'app.js', 'recensement.js', 'veille.js', 'forms/gms.js', 'manifest.webmanifest', 'icone-192.png', 'icone-512.png', 'logo-siagro.png'];
+const CACHE = 'collecte-terrain-v19';
+const FICHIERS = ['./', 'index.html', 'style.css', 'app.js', 'recensement.js', 'veille.js', 'forms/gms.js', 'manifest.webmanifest', 'icone-192.png', 'icone-512.png', 'logo-siagro.png', 'lib/qrcode.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FICHIERS)).then(() => self.skipWaiting()));

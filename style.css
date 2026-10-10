@@ -105,6 +105,10 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
 /* Paramètres */
 .reglages .champ { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
 .reglages input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--bord); border-radius: 8px; background: var(--surface); }
+.qr-connexion summary { cursor: pointer; }
+.qr-connexion small.avert { display: block; }
+.qr-connexion[open] { gap: 10px; }
+.qr-image { width: 100%; max-width: 300px; height: auto; align-self: center; border: 1px solid var(--bord); border-radius: 8px; image-rendering: pixelated; }
 .diagnostic { border-radius: var(--rayon); padding: 10px 12px; margin-bottom: 14px; font-size: .9rem; }
 .diagnostic.ok { background: var(--oui-fond); color: var(--oui); }
 .diagnostic.ko { background: var(--non-fond); color: var(--non); }
