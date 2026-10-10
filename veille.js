@@ -925,20 +925,7 @@ const Veille = (() => {
     return ok;
   }
 
-  async function exporterCsv() {
-    const cat = await Recensement.catalogue();
-    const fiches = (await DB.tout()).filter(f => f.form === FORM && f.statut !== 'brouillon');
-    if (!fiches.length) return;
-    const lignes = fiches.flatMap(f => lignesExport(f, cat).releves);
-    if (!lignes.length) return;
-    const entetes = Object.keys(lignes[0]);
-    const cellule = v => { const s = String(v ?? ''); return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const csv = '﻿' + [entetes.join(';'), ...lignes.map(l => entetes.map(k => cellule(l[k])).join(';'))].join('\r\n');
-    const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `${TITRE} - releves ${aujourdhui()}.csv` });
-    document.body.append(a); a.click(); a.remove();
-  }
-
-  return { FORM, TITRE, carte, resume, ouvrir, nouvelle, nbAEnvoyer, envoyer, telechargerHistorique, exporterCsv, lignesExport, depuisKobo, derniereVisite,
+  return { FORM, TITRE, carte, resume, ouvrir, nouvelle, nbAEnvoyer, envoyer, telechargerHistorique, lignesExport, depuisKobo, derniereVisite,
     _etat: () => V, _problemes: () => problemes() };
 })();
 window.Veille = Veille;

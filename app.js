@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.11.1';
+const VERSION_APP = '1.11.2';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -474,8 +474,7 @@ async function afficherAccueil() {
 
   const aEnvoyer = parStatut('finalisee').length + (window.Recensement ? await Recensement.nbAEnvoyer() : 0);   // les visites sont dans parStatut
   main.append(h('div', { class: 'actions-bas' },
-    h('button', { class: 'btn primaire', disabled: !aEnvoyer, onclick: () => synchroniser() }, `Envoyer (${aEnvoyer})`),
-    h('button', { class: 'btn', onclick: exporterCsv }, 'Exporter CSV')));
+    h('button', { class: 'btn primaire', disabled: !aEnvoyer, onclick: () => synchroniser() }, `Envoyer (${aEnvoyer})`)));
   if (r.dernierEnvoi) main.append(h('p', { class: 'discret centre' }, `Dernier envoi : ${new Date(r.dernierEnvoi).toLocaleString('fr-FR')}`));
 }
 
@@ -1348,22 +1347,6 @@ async function synchroniser({ silencieux = false } = {}) {
   if (window.Recensement) await Recensement.telechargerCatalogue();
   if (window.Veille) await Veille.telechargerHistorique();
   if (accueilAffiche()) afficherAccueil();
-}
-
-async function exporterCsv() {
-  const fiches = (await DB.tout()).filter(f => f.statut !== 'brouillon');
-  if (!fiches.length) return toast('Aucune fiche terminée à exporter');
-  for (const cle in FORMS) {
-    const F = FORMS[cle];
-    const lignes = fiches.filter(f => f.form === cle).map(f => ligneExport(F, f));
-    if (!lignes.length) continue;
-    const entetes = lignes[0].entetes;
-    const cellule = v => { const s = String(v ?? ''); return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const csv = '﻿' + [entetes.join(';'), ...lignes.map(l => entetes.map(k => cellule(l.ligne[k])).join(';'))].join('\r\n');
-    const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `${F.titre} - export ${aujourdhui()}.csv` });
-    document.body.append(a); a.click(); a.remove();
-  }
-  if (window.Veille) await Veille.exporterCsv();
 }
 
 /* ------------------------------------------------------------------ */
