@@ -149,7 +149,11 @@ const Recensement = (() => {
       const n = await importerCatalogue(j.produits);
       await telechargerMiniatures();
       if (!silencieux) toast(`Catalogue mis à jour : ${n} référence(s)`);
-    } catch (e) { if (!silencieux) toast('Catalogue non téléchargé : ' + e.message, 6000); }
+    } catch (e) {
+      const msg = /Action inconnue/i.test(e.message)
+        ? 'le script Google est une ancienne version : recollez Code.gs puis redéployez (Nouvelle version)' : e.message;
+      if (!silencieux) toast('Catalogue non téléchargé : ' + msg, 8000);
+    }
   }
 
   /* ---------- Fiches de recensement ---------- */

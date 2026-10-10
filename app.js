@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.8.2';
+const VERSION_APP = '1.9.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -387,7 +387,8 @@ async function telechargerHistorique({ force = false, silencieux = true } = {}) 
       if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
       total += await importerHistorique(F, j);
     }
-    Reglages.maj(x => { x.histMaj = maintenant(); });
+    // Rien reçu (serveur encore vide) : on retentera à la prochaine synchronisation au lieu d'attendre 6 heures
+    if (total > 0) Reglages.maj(x => { x.histMaj = maintenant(); });
     if (!silencieux) toast(`Historique mis à jour : ${total} point(s) de vente`);
   } catch (e) { if (!silencieux) toast('Historique non téléchargé : ' + e.message, 6000); }
 }
@@ -524,7 +525,10 @@ function afficherReglages() {
       h('p', { class: 'discret', id: 'r-hist' }, '…'),
       h('div', { class: 'actions-bas' },
         h('button', { class: 'btn', onclick: async () => {
-          await telechargerHistorique({ force: true, silencieux: false }); majEtatHistorique();
+          if (window.Recensement) await Recensement.telechargerCatalogue({ silencieux: false });
+          await telechargerHistorique({ force: true, silencieux: false });
+          if (window.Veille) await Veille.telechargerHistorique({ force: true });
+          majEtatHistorique();
         } }, 'Mettre à jour depuis le serveur'),
         h('label', { class: 'btn' }, 'Importer un fichier…',
           h('input', { type: 'file', accept: '.json,application/json', class: 'masque', onchange: async ev => {
@@ -610,7 +614,36 @@ async function testerServeur() {
   }
   if (j.ok) {
     Reglages.maj(x => { x.url = url; x.jeton = jeton; });
-    return afficher(true, 'Connexion réussie ✓ — adresse et clé enregistrées.');
+    // Un ancien déploiement répond au test mais ne connaît ni le catalogue ni la veille
+    if (!j.version) {
+      return afficher(false, 'Clé acceptée, mais le script déployé est une ancienne version',
+        'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON).',
+        'Puis Déployer > Gérer les déploiements > ✏ Modifier > Version : « Nouvelle version » > Déployer. L\'adresse reste la même.',
+        'Revenez ensuite ici et touchez à nouveau « Tester la connexion ».');
+    }
+    if (j.catalogue === -1) {
+      return afficher(false, 'Connexion réussie, mais l\'onglet « Catalogue » est introuvable dans la Google Sheet',
+        'Onglets trouvés : ' + (j.onglets || []).join(', '),
+        'Importez le fichier « Catalogue produits - base initiale.xlsx » (Fichier > Importer > Insérer de nouvelles feuilles), '
+        + 'puis renommez son onglet exactement « Catalogue » (C majuscule, sans espace ni chiffre).');
+    }
+    if (j.catalogue === 0 || (j.colonnesManquantes || []).length) {
+      return afficher(false, 'Connexion réussie, mais l\'onglet « Catalogue » est vide ou incomplet',
+        j.catalogue === 0 ? 'L\'onglet ne contient aucune référence sous la ligne d\'en-têtes.' : '',
+        (j.colonnesManquantes || []).length ? 'Colonnes manquantes en ligne 1 : ' + j.colonnesManquantes.join(', ') : '',
+        'Réimportez le fichier Excel du catalogue sans modifier la ligne d\'en-têtes.');
+    }
+    afficher(true, `Connexion réussie ✓ — ${j.catalogue} référence(s) au catalogue du serveur. Téléchargement en cours…`);
+    // Téléchargement immédiat (sinon il n'aurait lieu qu'au prochain démarrage ou au prochain envoi)
+    let n = 0;
+    try {
+      if (window.Recensement) { await Recensement.telechargerCatalogue({ silencieux: true }); n = (await Recensement.catalogue()).length; }
+      await telechargerHistorique({ force: true });
+      if (window.Veille) await Veille.telechargerHistorique({ force: true });
+    } catch (e) { /* le détail est donné ci-dessous */ }
+    majEtatHistorique();
+    return afficher(n > 0, n > 0 ? `Connexion réussie ✓ — catalogue chargé sur cet appareil : ${n} référence(s).` : 'Connexion réussie, mais le catalogue n\'a pas pu être téléchargé',
+      n > 0 ? 'Historique des magasins et photos des produits mis à jour.' : 'Vérifiez la connexion Internet puis touchez à nouveau « Tester la connexion ».');
   }
   if (/cl[ée]/i.test(j.erreur || '')) {
     return afficher(false, 'Le serveur répond, mais refuse la clé',

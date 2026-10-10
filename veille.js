@@ -81,7 +81,7 @@ const Veille = (() => {
       const j = await appelServeur(r.url, { action: 'historiqueVeille', jeton: r.jeton });
       if (!j.ok) return;
       await DB.histMettre((j.visites || []).map(v => ({ cle: `${FORM}|${v.magasin}`, form: FORM, magasin: v.magasin, date: v.date, par: v.par, lignes: v.lignes })));
-      Reglages.maj(x => { x.histVeilleMaj = maintenant(); });
+      if ((j.visites || []).length) Reglages.maj(x => { x.histVeilleMaj = maintenant(); });   // vide : nouvel essai au prochain envoi
     } catch (e) { /* nouvel essai à la prochaine synchronisation */ }
   }
 
@@ -93,8 +93,15 @@ const Veille = (() => {
       h('div', {}, h('h2', {}, TITRE),
         h('p', { class: 'discret' }, cat.length
           ? `${CATEGORIES.length} catégories · ${cat.filter(p => p.STATUT !== 'EXCLU').length} références · facings ${modeFacing() === 'photo' ? 'par photo' : 'saisis'}`
-          : 'Catalogue non chargé : Paramètres > Importer un fichier, ou serveur')),
-      h('button', { class: 'btn primaire', disabled: !cat.length, onclick: nouvelle }, '+ Nouvelle visite'));
+          : Reglages.lire().url ? 'Catalogue pas encore chargé sur cet appareil.' : 'Catalogue non chargé : configurez d\'abord le serveur (⚙ Paramètres).')),
+      cat.length || !Reglages.lire().url
+        ? h('button', { class: 'btn primaire', disabled: !cat.length, onclick: nouvelle }, '+ Nouvelle visite')
+        : h('button', { class: 'btn primaire', onclick: async ev => {
+            ev.target.disabled = true; ev.target.textContent = 'Chargement…';
+            await Recensement.telechargerCatalogue({ silencieux: false });
+            await Veille.telechargerHistorique({ force: true });
+            afficherAccueil();
+          } }, '⟳ Charger le catalogue'));
   }
 
   function resume(f) {
