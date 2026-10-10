@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.12.1';
+const VERSION_APP = '1.13.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -1507,6 +1507,56 @@ function choisirUtilisateur() {
       h('button', { class: 'btn', onclick: () => fermer(null) }, 'Passer')));
   document.body.append(voile);
 }
+
+/* ------------------------------------------------------------------ */
+/* Tirer pour actualiser (écran d'accueil, téléphones)                 */
+/* ------------------------------------------------------------------ */
+
+// Envoie les fiches en attente puis recharge catalogue, historique et photos.
+async function actualiserTout() {
+  if (!Reglages.lire().url) return toast('Téléphone non connecté : scannez le QR code de connexion');
+  if (!navigator.onLine) return toast('Pas de réseau : actualisation impossible pour le moment');
+  const avant = window.Recensement ? (await Recensement.catalogue()).length : 0;
+  await synchroniser({ silencieux: true, actualiser: true });
+  const apres = window.Recensement ? (await Recensement.catalogue()).length : 0;
+  const ecart = apres - avant;
+  toast(`Actualisé ✓ — catalogue : ${apres} référence(s)${avant && ecart ? ` (${ecart > 0 ? '+' : ''}${ecart})` : ''}`);
+  if (accueilAffiche()) afficherAccueil();
+}
+
+(function tirerPourActualiser() {
+  const SEUIL = 70;        // px à tirer (après amortissement) pour déclencher
+  const indic = h('div', { class: 'ptr', 'aria-hidden': 'true' }, h('span', { class: 'ptr-icone' }, '⟳'));
+  document.body.append(indic);
+  let depart = null, tire = 0, enCours = false;
+  const actif = () => accueilAffiche() && !document.querySelector('.voile, .camera') && !enCours;
+  const placer = d => {
+    indic.style.transform = `translate(-50%, ${Math.min(d, SEUIL + 20) * 1.35 - 56}px)`;   // descend jusque sous l'en-tête
+    indic.style.opacity = String(Math.min(1, d / SEUIL));
+    indic.firstChild.style.transform = `rotate(${d * 4}deg)`;
+    indic.classList.toggle('pret', d >= SEUIL);
+  };
+  const remettre = () => { indic.classList.add('retour'); placer(0); setTimeout(() => indic.classList.remove('retour'), 250); };
+  addEventListener('touchstart', e => {
+    depart = actif() && window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null;
+    tire = 0;
+  }, { passive: true });
+  addEventListener('touchmove', e => {
+    if (depart === null) return;
+    if (window.scrollY > 0) { depart = null; remettre(); return; }
+    tire = Math.max(0, (e.touches[0].clientY - depart) * 0.5);   // amortissement : il faut tirer franchement
+    placer(tire);
+  }, { passive: true });
+  addEventListener('touchend', async () => {
+    if (depart === null) return;
+    depart = null;
+    if (tire < SEUIL) return remettre();
+    enCours = true;
+    indic.classList.add('charge'); placer(SEUIL);
+    try { await actualiserTout(); } finally { enCours = false; indic.classList.remove('charge'); remettre(); }
+  });
+  addEventListener('touchcancel', () => { depart = null; remettre(); });
+})();
 
 // Import par adresse (usage sur PC) : index.html?importer=catalogue/catalogue.json,historique/historique-gms.json
 // Seuls des fichiers servis par l'application elle-même sont acceptés.
