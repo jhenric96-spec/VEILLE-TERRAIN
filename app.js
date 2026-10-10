@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.11.2';
+const VERSION_APP = '1.12.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
 
@@ -1313,7 +1313,8 @@ async function appelServeur(url, donnees) {
 }
 
 let envoiEnCours = false;
-async function synchroniser({ silencieux = false } = {}) {
+// actualiser : à l'ouverture / actualisation de la page, l'historique des visites est rechargé sans attendre 6 heures
+async function synchroniser({ silencieux = false, actualiser = false } = {}) {
   if (envoiEnCours) return;
   const r = Reglages.lire();
   if (!r.url) { if (!silencieux) toast('Configurez d\'abord le serveur dans Paramètres'); return; }
@@ -1345,7 +1346,7 @@ async function synchroniser({ silencieux = false } = {}) {
   else if (ok || !silencieux) toast(ok ? `${ok} fiche(s) envoyée(s) ✓` : 'Rien à envoyer');
   await telechargerHistorique();
   if (window.Recensement) await Recensement.telechargerCatalogue();
-  if (window.Veille) await Veille.telechargerHistorique();
+  if (window.Veille) await Veille.telechargerHistorique({ force: actualiser });
   if (accueilAffiche()) afficherAccueil();
 }
 
@@ -1531,4 +1532,4 @@ async function importerDepuisAdresse() {
   toast('Import — ' + bilan.join(' · '), 6000);
 }
 
-importerDepuisAdresse().then(afficherAccueil).then(importerConnexion).then(() => synchroniser({ silencieux: true }));
+importerDepuisAdresse().then(afficherAccueil).then(importerConnexion).then(() => synchroniser({ silencieux: true, actualiser: true }));

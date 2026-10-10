@@ -146,9 +146,16 @@ const Recensement = (() => {
       if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
       // Onglet Catalogue absent ou vide côté serveur : on garde le catalogue de l'appareil.
       if (!j.produits || !j.produits.length) { if (!silencieux) toast('Catalogue vide sur le serveur : catalogue de l\'appareil conservé'); return; }
+      const avant = await catalogue();
+      const signature = l => l.map(p => [p.ID, p.NOM_SYSTEME, p.CATEGORIE, p.STATUT, p.PHOTO].join('|')).sort().join('\n');
       const n = await importerCatalogue(j.produits);
       await telechargerMiniatures();
-      if (!silencieux) toast(`Catalogue mis à jour : ${n} référence(s)`);
+      const change = signature(avant) !== signature(await catalogue());
+      // Toujours un message si demandé ; en automatique (ouverture de la page), seulement s'il y a du nouveau
+      if (!silencieux || (change && avant.length)) {
+        const ecart = n - avant.length;
+        toast(change ? `Catalogue mis à jour : ${n} référence(s)${ecart ? ` (${ecart > 0 ? '+' : ''}${ecart})` : ''}` : `Catalogue à jour : ${n} référence(s)`);
+      }
     } catch (e) {
       const msg = /Action inconnue/i.test(e.message)
         ? 'le script Google est une ancienne version : recollez Code.gs puis redéployez (Nouvelle version)' : e.message;

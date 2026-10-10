@@ -87,8 +87,30 @@ const Veille = (() => {
 
   /* ---------- Accueil ---------- */
 
+  async function actualiser(ev) {
+    const b = ev.currentTarget;
+    b.disabled = true; b.textContent = '⟳ Actualisation…';
+    await Recensement.telechargerCatalogue({ silencieux: false });
+    await telechargerHistorique({ force: true });
+    afficherAccueil();
+  }
+
   async function carte() {
     const cat = await Recensement.catalogue();
+    const r = Reglages.lire();
+    const maj = r.catalogueMaj ? new Date(r.catalogueMaj) : null;
+    const quand = maj ? (maj.toDateString() === new Date().toDateString()
+      ? `aujourd'hui à ${maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+      : `le ${maj.toLocaleDateString('fr-FR')}`) : '';
+    if (cat.length && r.url) {
+      return h('section', { class: 'carte-form' },
+        h('div', {}, h('h2', {}, TITRE),
+          h('p', { class: 'discret' }, `${CATEGORIES.length} catégories · ${cat.filter(p => p.STATUT !== 'EXCLU').length} références · facings ${modeFacing() === 'photo' ? 'par photo' : 'saisis'}`),
+          quand ? h('p', { class: 'discret' }, `Catalogue mis à jour ${quand}`) : null),
+        h('div', { class: 'carte-actions' },
+          h('button', { class: 'btn primaire', onclick: nouvelle }, '+ Nouvelle visite'),
+          h('button', { class: 'btn petit', disabled: !navigator.onLine, title: navigator.onLine ? '' : 'Pas de réseau', onclick: actualiser }, '⟳ Actualiser')));
+    }
     return h('section', { class: 'carte-form' },
       h('div', {}, h('h2', {}, TITRE),
         h('p', { class: 'discret' }, cat.length
