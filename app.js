@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.14.1';
+const VERSION_APP = '1.14.2';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -680,8 +680,11 @@ async function testerServeur() {
     // Un ancien déploiement répond au test mais ne connaît ni le catalogue ni la veille
     if (!j.version || Number(j.version) < VERSION_SERVEUR_MIN) {
       return afficher(false, `Clé acceptée, mais le script déployé est une ancienne version (${j.version || 'avant 1.9'} ; ${VERSION_SERVEUR_MIN.toFixed(1)} requise)`,
-        'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON).',
-        'Puis Déployer > Gérer les déploiements > ✏ Modifier > Version : « Nouvelle version » > Déployer. L\'adresse reste la même.',
+        'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON), puis enregistrez (Ctrl+S).',
+        `Déployer > Gérer les déploiements : modifiez (✏) le déploiement dont l'adresse se termine par …${((url.match(/\/s\/([^/]+)\/exec/) || [])[1] || '').slice(-8)}/exec, `
+          + 'Version : « Nouvelle version » > Déployer. L\'adresse reste la même.',
+        'Si vous avez créé un « Nouveau déploiement », il a une autre adresse : collez-la dans « Adresse du serveur » ci-dessus (et partagez le nouveau QR code).',
+        'Vérification : ouvrez l\'adresse /exec dans le navigateur, elle doit afficher "version":"2.0".',
         'Revenez ensuite ici et touchez à nouveau « Tester la connexion ».');
     }
     if (j.catalogue === -1) {

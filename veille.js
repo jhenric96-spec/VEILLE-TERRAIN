@@ -78,9 +78,12 @@ const Veille = (() => {
     const ping = await appelServeur(r.url, { action: 'ping', jeton: r.jeton });
     if (!ping.ok) throw new Error(ping.erreur || 'serveur injoignable');
     if (!ping.version || Number(ping.version) < 2) {
-      throw new Error(`Le script Google déployé est en version ${ping.version || 'ancienne'} : la version 2.0 est nécessaire. `
-        + 'Dans Apps Script, remplacez tout le code par la dernière version de Code.gs (en gardant votre ligne JETON), '
-        + 'puis Déployer > Gérer les déploiements > ✏ Modifier > Version : « Nouvelle version » > Déployer. Recommencez ensuite.');
+      const id = (r.url.match(/\/s\/([^/]+)\/exec/) || [])[1] || '';
+      throw new Error(`L'adresse utilisée par l'application (…${id.slice(-8)}/exec) sert encore le script en version ${ping.version || 'ancienne'} `
+        + '(2.0 nécessaire). Dans Apps Script : 1) vérifiez que la ligne VERSION_SERVEUR indique 2.0 et enregistrez (Ctrl+S) ; '
+        + `2) Déployer > Gérer les déploiements : modifiez (✏) le déploiement dont l'adresse se termine par …${id.slice(-8)}/exec, `
+        + 'choisissez Version « Nouvelle version », puis Déployer. Si vous avez créé un nouveau déploiement avec une autre adresse, '
+        + 'collez plutôt cette nouvelle adresse dans le champ « Adresse du serveur » ci-dessus, puis partagez le nouveau QR code.');
     }
     const liste = [];
     for (const m of magasinsKobo()) {
