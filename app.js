@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.16.0';
+const VERSION_APP = '1.16.1';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -1321,9 +1321,9 @@ async function terminer() {
 /* Envoi au serveur et export                                          */
 /* ------------------------------------------------------------------ */
 
-async function appelServeur(url, donnees) {
+async function appelServeur(url, donnees, delai = 90000) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 90000);
+  const t = setTimeout(() => ctrl.abort(), delai);
   try {
     // text/plain évite la requête préalable CORS, refusée par Google Apps Script.
     const r = await fetch(url, { method: 'POST', body: JSON.stringify(donnees), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, signal: ctrl.signal });
