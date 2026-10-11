@@ -175,15 +175,18 @@ const Recensement = (() => {
   async function nbAEnvoyer() { return (await fiches()).filter(f => f.statut === 'finalisee').length; }
 
   async function envoyer(r) {
-    let ok = 0;
+    let ok = 0, erreur = null;   // une fiche refusée n'empêche pas l'envoi des suivantes
     for (const f of (await fiches()).filter(x => x.statut === 'finalisee')) {
-      const j = await appelServeur(r.url, { action: 'recenser', jeton: r.jeton, id: f.id, ligne: f.valeurs, photo: f.photo,
-        photoIngredients: f.photoIngredients, miniature: f.miniature || (f.photo ? await reduire(f.photo) : '') });
-      if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
-      f.statut = 'envoyee'; f.envoyeLe = maintenant(); f.photo = null; f.photoIngredients = null; f.miniature = null;   // les photos sont désormais sur le Drive
-      await DB.mettre(f);
-      ok++;
+      try {
+        const j = await appelServeur(r.url, { action: 'recenser', jeton: r.jeton, id: f.id, ligne: f.valeurs, photo: f.photo,
+          photoIngredients: f.photoIngredients, miniature: f.miniature || (f.photo ? await reduire(f.photo) : '') });
+        if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
+        f.statut = 'envoyee'; f.envoyeLe = maintenant(); f.photo = null; f.photoIngredients = null; f.miniature = null;   // les photos sont désormais sur le Drive
+        await DB.mettre(f);
+        ok++;
+      } catch (e) { erreur = erreur || e; }
     }
+    if (erreur) { erreur.envoyees = ok; throw erreur; }
     return ok;
   }
 

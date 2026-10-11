@@ -1241,68 +1241,71 @@ const Veille = (() => {
   async function envoyer(r) {
     await chargerReferentiels();
     const cat = await Recensement.catalogue();
-    let ok = 0;
+    let ok = 0, erreur = null;   // une fiche refusée n'empêche pas l'envoi des suivantes
     for (const f of (await DB.tout()).filter(x => x.form === FORM && x.statut === 'finalisee')) {
-      const m = magasin(f.valeurs.MAGASIN) || { nom: '' };
-      f.equip = f.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };
-      // 1. Photos une par une (évite une requête trop lourde ; reprise possible après coupure)
-      for (const c of Object.keys(f.photos)) {
-        f.liens[c] = f.liens[c] || [];
-        for (let i = 0; i < f.photos[c].length; i++) {
-          if (f.liens[c][i] || !f.photos[c][i]) continue;
-          const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: c,
-            emplacement: empDe(f, c, i), n: numeroModule(f, c, i), data: f.photos[c][i] });
+      try {
+        const m = magasin(f.valeurs.MAGASIN) || { nom: '' };
+        f.equip = f.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };
+        // 1. Photos une par une (évite une requête trop lourde ; reprise possible après coupure)
+        for (const c of Object.keys(f.photos)) {
+          f.liens[c] = f.liens[c] || [];
+          for (let i = 0; i < f.photos[c].length; i++) {
+            if (f.liens[c][i] || !f.photos[c][i]) continue;
+            const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: c,
+              emplacement: empDe(f, c, i), n: numeroModule(f, c, i), data: f.photos[c][i] });
+            if (!j.ok) throw new Error(j.erreur || 'photo refusée');
+            f.liens[c][i] = j.lien;
+            await DB.mettre(f);
+          }
+        }
+        for (const cle of equipCles(f)) {
+          if (f.equip.liens[cle] || !f.equip.photos[cle]) continue;
+          const [, nom, k, moment] = cle.match(/^(.*) (\d+) (AVANT|APRES)$/);
+          const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: 'EQUIPEMENTS',
+            emplacement: `${nom} ${k}`, n: moment, data: f.equip.photos[cle] });
           if (!j.ok) throw new Error(j.erreur || 'photo refusée');
-          f.liens[c][i] = j.lien;
+          f.equip.liens[cle] = j.lien;
           await DB.mettre(f);
         }
-      }
-      for (const cle of equipCles(f)) {
-        if (f.equip.liens[cle] || !f.equip.photos[cle]) continue;
-        const [, nom, k, moment] = cle.match(/^(.*) (\d+) (AVANT|APRES)$/);
-        const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: 'EQUIPEMENTS',
-          emplacement: `${nom} ${k}`, n: moment, data: f.equip.photos[cle] });
-        if (!j.ok) throw new Error(j.erreur || 'photo refusée');
-        f.equip.liens[cle] = j.lien;
+        for (const x of f.inconnus) {
+          if (x.lien || !x.photo) continue;
+          const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: x.categorie, n: 'hors-catalogue', data: x.photo });
+          if (!j.ok) throw new Error(j.erreur || 'photo refusée');
+          x.lien = j.lien;
+          await DB.mettre(f);
+        }
+        // 2. La visite et ses relevés
+        const { visite, releves } = lignesExport(f, cat);
+        const photos = [];
+        for (const c in f.liens) f.liens[c].forEach((lien, i) => {
+          if (!lien) return;
+          const e = empDe(f, c, i);
+          const mt = metaDe(f, c, i);
+          photos.push({ _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN: m.nom, CATEGORIE: c, EMPLACEMENT: e, MODULE: numeroModule(f, c, i), MOMENT: '',
+            COMPTE_FACING_TOTAL: e === EMPLACEMENT_PRINCIPAL ? 'OUI' : 'NON',
+            // Bande déjà comptée sur la photo précédente : ne pas y recompter les produits (centre dans la bande)
+            PRISE: mt.prise === 'guidee' ? 'GUIDEE' : 'LIBRE', RECOUVREMENT_COTE: { droite: 'GAUCHE', bas: 'HAUT' }[mt.direction] || '',
+            RECOUVREMENT_PCT: mt.recouvrement ? Math.round(mt.recouvrement * 100) : 0,
+            LIEN: lien, FACINGS_CALCULES: facingsIA(f, mt) });
+        });
+        for (const cle of equipCles(f)) {
+          const lien = f.equip.liens[cle];
+          if (!lien) continue;
+          const [, nom, k, moment] = cle.match(/^(.*) (\d+) (AVANT|APRES)$/);
+          photos.push({ _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN: m.nom, CATEGORIE: 'EQUIPEMENTS', EMPLACEMENT: nom, MODULE: Number(k), MOMENT: moment,
+            COMPTE_FACING_TOTAL: 'NON', LIEN: lien, FACINGS_CALCULES: '' });
+        }
+        const inconnus = f.inconnus.map(x => ({ _id: x.id, DATE: f.valeurs.DATE, APPAREIL: f.appareil, CATEGORIE: x.categorie, NOM_PROPOSE: x.description,
+          PHOTO: x.lien || '', ORIGINE: 'VEILLE ' + m.nom, PRIX_RELEVE: x.prix }));
+        const j = await appelServeur(r.url, { action: 'visite', jeton: r.jeton, visite, releves, photos, inconnus });
+        if (!j.ok) throw new Error(j.erreur || 'visite refusée');
+        f.statut = 'envoyee'; f.envoyeLe = maintenant();
+        f.photos = {}; f.equip.photos = {}; f.inconnus.forEach(x => { x.photo = null; });   // photos libérées : elles sont sur le Drive
         await DB.mettre(f);
-      }
-      for (const x of f.inconnus) {
-        if (x.lien || !x.photo) continue;
-        const j = await appelServeur(r.url, { action: 'photoVeille', jeton: r.jeton, id: f.id, date: f.valeurs.DATE, magasin: m.nom, categorie: x.categorie, n: 'hors-catalogue', data: x.photo });
-        if (!j.ok) throw new Error(j.erreur || 'photo refusée');
-        x.lien = j.lien;
-        await DB.mettre(f);
-      }
-      // 2. La visite et ses relevés
-      const { visite, releves } = lignesExport(f, cat);
-      const photos = [];
-      for (const c in f.liens) f.liens[c].forEach((lien, i) => {
-        if (!lien) return;
-        const e = empDe(f, c, i);
-        const mt = metaDe(f, c, i);
-        photos.push({ _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN: m.nom, CATEGORIE: c, EMPLACEMENT: e, MODULE: numeroModule(f, c, i), MOMENT: '',
-          COMPTE_FACING_TOTAL: e === EMPLACEMENT_PRINCIPAL ? 'OUI' : 'NON',
-          // Bande déjà comptée sur la photo précédente : ne pas y recompter les produits (centre dans la bande)
-          PRISE: mt.prise === 'guidee' ? 'GUIDEE' : 'LIBRE', RECOUVREMENT_COTE: { droite: 'GAUCHE', bas: 'HAUT' }[mt.direction] || '',
-          RECOUVREMENT_PCT: mt.recouvrement ? Math.round(mt.recouvrement * 100) : 0,
-          LIEN: lien, FACINGS_CALCULES: facingsIA(f, mt) });
-      });
-      for (const cle of equipCles(f)) {
-        const lien = f.equip.liens[cle];
-        if (!lien) continue;
-        const [, nom, k, moment] = cle.match(/^(.*) (\d+) (AVANT|APRES)$/);
-        photos.push({ _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN: m.nom, CATEGORIE: 'EQUIPEMENTS', EMPLACEMENT: nom, MODULE: Number(k), MOMENT: moment,
-          COMPTE_FACING_TOTAL: 'NON', LIEN: lien, FACINGS_CALCULES: '' });
-      }
-      const inconnus = f.inconnus.map(x => ({ _id: x.id, DATE: f.valeurs.DATE, APPAREIL: f.appareil, CATEGORIE: x.categorie, NOM_PROPOSE: x.description,
-        PHOTO: x.lien || '', ORIGINE: 'VEILLE ' + m.nom, PRIX_RELEVE: x.prix }));
-      const j = await appelServeur(r.url, { action: 'visite', jeton: r.jeton, visite, releves, photos, inconnus });
-      if (!j.ok) throw new Error(j.erreur || 'visite refusée');
-      f.statut = 'envoyee'; f.envoyeLe = maintenant();
-      f.photos = {}; f.equip.photos = {}; f.inconnus.forEach(x => { x.photo = null; });   // photos libérées : elles sont sur le Drive
-      await DB.mettre(f);
-      ok++;
+        ok++;
+      } catch (e) { erreur = erreur || e; }
     }
+    if (erreur) { erreur.envoyees = ok; throw erreur; }
     return ok;
   }
 

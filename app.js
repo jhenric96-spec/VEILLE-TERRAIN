@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.17.1';
+const VERSION_APP = '1.17.2';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -476,6 +476,10 @@ async function afficherAccueil() {
   const aEnvoyer = parStatut('finalisee').length + (window.Recensement ? await Recensement.nbAEnvoyer() : 0);   // les visites sont dans parStatut
   main.append(h('div', { class: 'actions-bas' },
     h('button', { class: 'btn primaire', disabled: !aEnvoyer, onclick: () => synchroniser() }, `Envoyer (${aEnvoyer})`)));
+  if (aEnvoyer && r.url) main.append(h('p', { class: 'discret centre etat-envoi' }, !navigator.onLine
+    ? `Hors ligne : ${aEnvoyer} fiche(s) partiront automatiquement au retour du réseau.`
+    : r.envoiEchec ? `Envoi automatique en attente (${r.envoiEchec.message}) : nouvel essai toutes les 2 minutes.`
+      : `${aEnvoyer} fiche(s) en cours d'envoi automatique.`));
   if (r.dernierEnvoi) main.append(h('p', { class: 'discret centre' }, `Dernier envoi : ${new Date(r.dernierEnvoi).toLocaleString('fr-FR')}`));
 }
 
@@ -1350,15 +1354,20 @@ async function signalerEtatAppareil(r) {
   } catch (e) { /* sans conséquence : réessayé à la prochaine synchronisation */ }
 }
 
+// Fiches terminées (donc complètes) pas encore envoyées, tous formulaires confondus
+async function nbFichesEnAttente() { return (await DB.tout()).filter(f => f.statut === 'finalisee').length; }
+
 // actualiser : à l'ouverture / actualisation de la page, l'historique des visites est rechargé sans attendre 6 heures
-async function synchroniser({ silencieux = false, actualiser = false } = {}) {
+// envoiSeul : nouvel essai automatique (toutes les 2 minutes, retour au premier plan) : envoi des fiches uniquement
+async function synchroniser({ silencieux = false, actualiser = false, envoiSeul = false } = {}) {
   if (envoiEnCours) return;
   const r = Reglages.lire();
   if (!r.url) { if (!silencieux) toast('Configurez d\'abord le serveur dans Paramètres'); return; }
-  if (!navigator.onLine) { if (!silencieux) toast('Pas de réseau : les fiches seront envoyées plus tard'); return; }
+  if (!navigator.onLine) { if (!silencieux) toast('Pas de réseau : les fiches seront envoyées automatiquement au retour du réseau'); return; }
   envoiEnCours = true;
   const fiches = (await DB.tout()).filter(f => f.statut === 'finalisee');
   let ok = 0, erreur = null;
+  const noter = e => { erreur = erreur || e; };   // une fiche refusée n'empêche pas l'envoi des suivantes
   for (const f of fiches) {
     const F = FORMS[f.form];
     if (!F) continue;
@@ -1369,18 +1378,22 @@ async function synchroniser({ silencieux = false, actualiser = false } = {}) {
       f.statut = 'envoyee'; f.envoyeLe = maintenant(); f.photos = {};   // photos libérées : elles sont sur le Drive
       await DB.mettre(f);
       ok++;
-    } catch (e) { erreur = e; break; }
+    } catch (e) { noter(e); }
   }
-  if (!erreur && window.Veille) {
-    try { ok += await Veille.envoyer(r); } catch (e) { erreur = e; }
-  }
-  if (!erreur && window.Recensement) {
-    try { ok += await Recensement.envoyer(r); } catch (e) { erreur = e; }
+  for (const module of [window.Veille, window.Recensement]) {
+    if (!module) continue;
+    try { ok += await module.envoyer(r); } catch (e) { ok += e.envoyees || 0; noter(e); }
   }
   envoiEnCours = false;
-  if (ok) Reglages.maj(x => { x.dernierEnvoi = maintenant(); });
-  if (erreur) toast(`${ok} fiche(s) envoyée(s). Erreur : ${erreur.message}`, 6000);
-  else if (ok || !silencieux) toast(ok ? `${ok} fiche(s) envoyée(s) ✓` : 'Rien à envoyer');
+  const reste = await nbFichesEnAttente();
+  Reglages.maj(x => {
+    if (ok) x.dernierEnvoi = maintenant();
+    if (erreur && reste) x.envoiEchec = { le: maintenant(), message: erreur.message }; else delete x.envoiEchec;
+  });
+  // Essais automatiques : pas de message d'erreur à répétition (l'accueil indique l'état de l'envoi)
+  if (erreur && !silencieux) toast(`${ok} fiche(s) envoyée(s). Erreur : ${erreur.message}`, 6000);
+  else if (ok || !silencieux) toast(ok ? `${ok} fiche(s) envoyée(s) ✓` : erreur ? 'Envoi impossible pour le moment : nouvel essai automatique' : 'Rien à envoyer');
+  if (envoiSeul) { if (accueilAffiche()) afficherAccueil(); return; }
   await telechargerHistorique();
   if (window.Recensement) await Recensement.telechargerCatalogue();
   if (window.Veille) { await Veille.telechargerReferentiels(); await Veille.telechargerHistorique({ force: actualiser }); }
@@ -1407,6 +1420,15 @@ window.addEventListener('popstate', async () => {
   afficherAccueil();
 });
 window.addEventListener('online', () => { if (accueilAffiche()) afficherAccueil(); synchroniser({ silencieux: true }); });
+// Envoi automatique des fiches terminées : le signal « réseau revenu » est peu fiable sur Android (Wi-Fi sans internet,
+// données lentes, envoi interrompu) : nouvel essai toutes les 2 minutes tant qu'il reste des fiches, et au retour au premier plan.
+const ENVOI_AUTO_MS = 2 * 60 * 1000;
+async function envoiAutomatique() {
+  if (envoiEnCours || document.hidden || !navigator.onLine || !Reglages.lire().url) return;
+  if (await nbFichesEnAttente()) synchroniser({ silencieux: true, envoiSeul: true });
+}
+setInterval(envoiAutomatique, ENVOI_AUTO_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) envoiAutomatique(); });
 window.addEventListener('offline', () => { if (accueilAffiche()) afficherAccueil(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && E) DB.mettre(E.fiche); });
 
