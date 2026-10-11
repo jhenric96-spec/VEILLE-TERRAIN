@@ -200,6 +200,7 @@ const Veille = (() => {
     fiche.equip = fiche.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };   // visites créées avant l'étape Équipements
     const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('('));
     V = { fiche, cat, parId: Object.fromEntries(cat.map(p => [p.ID, p])), etape: 0, montrer: false, mini: await Recensement.miniatures() };
+    if (fiche.ia) CATEGORIES.forEach(c => appliquerIA(fiche, c, V.parId));   // analyses arrivées visite fermée
     history.pushState({ vue: 'veille' }, '');
     construire();
     if (nouvelleVisite) capturerGps();
@@ -346,9 +347,174 @@ const Veille = (() => {
     }
     (f.photos[c] = f.photos[c] || []).push(data);
     f.emp[c].push(e);
-    f.meta[c].push(Object.assign({ hash }, meta));
+    f.meta[c].push(Object.assign({ hash, uid: uuid() }, meta));
     sauver();
+    analyser(c, f.photos[c].length - 1);   // en ligne : liste proposée par l'IA, sans attendre
     return true;
+  }
+
+  /* ---------- Analyse des photos par l'IA (en ligne) ----------
+     Chaque photo est envoyée au serveur, qui la fait analyser (Gemini aujourd'hui, notre propre moteur demain).
+     Le résultat est une PROPOSITION : produits reconnus ajoutés et marqués « IA », doutes à vérifier,
+     produits de la dernière visite non vus signalés (jamais retirés d'office). Le merchandiser valide toujours.
+     Sans réseau, ou si l'IA est indisponible, la saisie reste celle d'avant. */
+  const IA_PAUSE_MS = 6 * 3600 * 1000;        // serveur sans IA : nouvel essai 6 heures plus tard
+  const ORDRE_CONFIANCE = { haute: 3, moyenne: 2, basse: 1 };
+  const iaEnCours = new Set();                 // identifiants des photos en cours d'analyse
+  const iaActive = () => {
+    const r = Reglages.lire();
+    return r.iaPhotos !== false && !!r.url && !(r.iaIndispo && Date.now() - new Date(r.iaIndispo) < IA_PAUSE_MS);
+  };
+
+  function reduireData(data, max, qualite) {
+    return new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => {
+        const r = Math.min(1, max / Math.max(img.width, img.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(img.width * r); cv.height = Math.round(img.height * r);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        res(cv.toDataURL('image/jpeg', qualite));
+      };
+      img.onerror = () => rej(new Error('image'));
+      img.src = data;
+    });
+  }
+
+  async function analyser(c, i) {
+    const f = V.fiche, mt = metaDe(f, c, i), data = (f.photos[c] || [])[i];
+    if (!iaActive() || !navigator.onLine || !data || !mt.uid || iaEnCours.has(mt.uid)) return;
+    if (f.ia && f.ia[mt.uid] && f.ia[mt.uid].statut === 'ok') return;
+    const id = f.id, r = Reglages.lire();
+    iaEnCours.add(mt.uid);
+    redessinerIA(c);
+    let res;
+    try {
+      const derniers = Object.keys(f.lignes).filter(x => f.lignes[x].repris && V.parId[x] && V.parId[x].CATEGORIE === c);
+      res = await appelServeur(r.url, { action: 'analysePhoto', jeton: r.jeton, id, appareil: idAppareil(), magasin: f.valeurs.MAGASIN, categorie: c,
+        emplacement: empDe(f, c, i), module: numeroModule(f, c, i), recouvrement: mt.recouvrement || 0, direction: mt.direction || '', derniers,
+        data: await reduireData(data, 1600, 0.75) });
+    } catch (e) { res = { ok: false, raison: 'pas de réseau' }; }
+    iaEnCours.delete(mt.uid);
+    // Serveur sans IA (clé non configurée, ancienne version) : on n'insiste pas pendant 6 heures
+    if (!res.ok && (res.raison === 'non configuré' || /Action inconnue/.test(res.erreur || ''))) Reglages.maj(x => { x.iaIndispo = maintenant(); });
+    const resultat = res.ok
+      ? { statut: 'ok', c, produits: res.produits || [], inconnus: res.inconnus || [], qualite: res.qualite_photo || '', modele: res.modele || '' }
+      : { statut: 'echec', c, raison: res.raison || res.erreur || 'erreur' };
+    // La visite a pu être fermée entre-temps : le résultat est rangé dans la fiche enregistrée et appliqué à la réouverture
+    if (V && V.fiche.id === id) {
+      (V.fiche.ia = V.fiche.ia || {})[mt.uid] = resultat;
+      appliquerIA(V.fiche, c, V.parId);
+      sauver();
+      redessinerIA(c, res.ok);
+    } else {
+      const fiche = await DB.lire(id);
+      if (!fiche || fiche.statut === 'envoyee') return;
+      (fiche.ia = fiche.ia || {})[mt.uid] = resultat;
+      await DB.mettre(fiche);
+    }
+  }
+
+  // Redessine l'étape si elle est affichée, sans couper une saisie en cours (repris quand le champ est quitté)
+  function redessinerIA(c, nouveau) {
+    if (!V || V.etape !== CATEGORIES.indexOf(c) + 1) { majNav(); return; }
+    const actif = document.activeElement;
+    if (actif && actif.tagName === 'INPUT' && V.corps.contains(actif)) {
+      V.iaARedessiner = true;
+      if (nouveau) toast('🤖 Liste mise à jour par l\'IA', 2000);
+      return;
+    }
+    rendre();
+  }
+
+  // Synthèse des analyses d'une catégorie (photos encore présentes) : par référence, facing rayon principal / hors rayon,
+  // prix lu, meilleure confiance ; plus l'état des analyses.
+  function agregerIA(f, c) {
+    const agg = {}, inconnus = [];
+    let total = 0, ok = 0, echecs = 0, enCours = 0, raison = '';
+    const metas = (f.meta || {})[c] || [];
+    metas.forEach((mt, i) => {
+      if (!mt || !mt.uid || !((f.photos[c] || [])[i] || (f.liens[c] || [])[i])) return;
+      total++;
+      if (iaEnCours.has(mt.uid)) { enCours++; return; }
+      const a = (f.ia || {})[mt.uid];
+      if (!a) return;
+      if (a.statut !== 'ok') { echecs++; raison = a.raison; return; }
+      ok++;
+      const principal = empDe(f, c, i) === EMPLACEMENT_PRINCIPAL;
+      for (const x of a.produits) {
+        const s = agg[x.ref] = agg[x.ref] || { facing: 0, facingSec: 0, prix: null, confiance: 'basse', doute_avec: null };
+        if (principal) s.facing += x.facing || 0; else s.facingSec += x.facing || 0;
+        if (!s.prix && x.prix) s.prix = x.prix;
+        if (ORDRE_CONFIANCE[x.confiance] > ORDRE_CONFIANCE[s.confiance] || (x.confiance === s.confiance && !s.doute_avec)) {
+          s.confiance = x.confiance; s.doute_avec = x.doute_avec || null;
+        }
+      }
+      inconnus.push(...a.inconnus);
+    });
+    return { agg, inconnus, total, ok, echecs, enCours, raison, complet: total > 0 && ok === total };
+  }
+
+  // Applique la synthèse à la liste. Idempotent : rejoué après chaque analyse, suppression de photo ou réouverture.
+  // - référence reconnue (confiance haute ou moyenne) absente de la liste : ajoutée, marquée « parIA » ;
+  // - facings et prix lus : remplis seulement si le champ est vide ou s'il contient encore la valeur proposée par l'IA ;
+  // - un produit retiré par le merchandiser n'est plus jamais reproposé dans cette visite (iaRejets).
+  function appliquerIA(f, c, parId) {
+    const { agg } = agregerIA(f, c);
+    f.iaRejets = f.iaRejets || {};
+    const saisie = modeFacing() === 'saisie';
+    for (const id in f.lignes) {          // références qui ne sont plus reconnues (photo supprimée)
+      const l = f.lignes[id];
+      if (!parId[id] || parId[id].CATEGORIE !== c || !l.ia || agg[id] || l.ia.corrige) continue;
+      if (l.parIA && !l.touche) delete f.lignes[id]; else delete l.ia;
+    }
+    for (const id in agg) {
+      const s = agg[id];
+      if (!parId[id] || f.iaRejets[id]) continue;
+      let l = f.lignes[id];
+      if (!l) {
+        if (s.confiance === 'basse') continue;   // simple suggestion, affichée sous les photos
+        l = f.lignes[id] = { present: true, prix: '', facing: '', parIA: true };
+      }
+      l.ia = { confiance: s.confiance, doute_avec: s.doute_avec, facing: s.facing, facingSec: s.facingSec, prix: s.prix };
+      if (l.present === false) continue;     // marqué absent par le merchandiser : on ne le contredit pas
+      const remplir = (champ, val, memo) => {
+        if (val === null || val === undefined || val === '') return;
+        if (vide(l[champ]) || l[champ] === l[memo]) { l[champ] = val; l[memo] = val; }
+      };
+      if (saisie) { remplir('facing', s.facing, 'iaFacing'); if (s.facingSec) remplir('facingSec', s.facingSec, 'iaFacingSec'); }
+      if (s.prix && !l.repris) remplir('prix', s.prix, 'iaPrix');   // produit repris : le prix de la dernière visite reste proposé
+    }
+  }
+
+  // Bloc « Analyse IA » sous les photos : état, suggestions à faible confiance, produits hors catalogue repérés
+  function blocIA(c) {
+    const f = V.fiche;
+    const r = Reglages.lire();
+    if (r.iaPhotos === false || !r.url) return null;
+    const g = agregerIA(f, c);
+    if (!g.total || (!iaActive() && !g.ok)) return null;   // serveur sans IA : rien à afficher, saisie classique
+    const aRelancer = ((f.meta || {})[c] || []).some((mt, i) => mt && mt.uid && (f.photos[c] || [])[i] && !iaEnCours.has(mt.uid)
+      && !((f.ia || {})[mt.uid] && f.ia[mt.uid].statut === 'ok'));
+    const reconnus = Object.keys(g.agg).filter(id => f.lignes[id] && f.lignes[id].ia);
+    const doutes = reconnus.filter(id => g.agg[id].confiance !== 'haute').length;
+    const nonVus = g.complet ? Object.keys(f.lignes).filter(id => V.parId[id] && V.parId[id].CATEGORIE === c && f.lignes[id].repris
+      && f.lignes[id].present !== false && !g.agg[id]).length : 0;
+    const suggestions = Object.keys(g.agg).filter(id => !f.lignes[id] && V.parId[id] && !(f.iaRejets || {})[id]);
+    let etat;
+    if (g.enCours) etat = `🤖 Analyse de ${g.enCours} photo(s) en cours… vous pouvez continuer.`;
+    else if (g.ok) etat = `🤖 ${reconnus.length} produit(s) reconnu(s)` + (doutes ? ` · ${doutes} à vérifier` : '') + (nonVus ? ` · ${nonVus} non vu(s) sur les photos` : '')
+      + (g.echecs ? ` · ${g.echecs} photo(s) non analysée(s)` : '');
+    else if (g.echecs) etat = `🤖 Analyse impossible (${g.raison}) : saisie classique.`;
+    else etat = navigator.onLine ? '🤖 Photos pas encore analysées.' : '🤖 Hors ligne : l\'analyse se fera quand le réseau reviendra (bouton ci-dessous).';
+    return h('div', { class: 'bloc-ia' },
+      h('p', { class: 'ia-etat' }, etat),
+      g.ok ? h('small', { class: 'discret' }, 'Proposition de l\'IA : vérifiez chaque produit, corrigez les prix, retirez ce qui est faux.') : null,
+      suggestions.length ? h('div', { class: 'ia-suggestions' }, h('small', {}, 'L\'IA pense aussi voir (peu sûr) :'),
+        suggestions.map(id => h('button', { type: 'button', class: 'btn petit', 'data-act': 'ia-ajouter', 'data-v': id }, '+ ' + V.parId[id].NOM_SYSTEME))) : null,
+      g.inconnus.length ? h('small', { class: 'discret' }, 'Hors catalogue repérés : ' + g.inconnus.map(x => x.description).slice(0, 5).join(' · ')
+        + ' → si c\'est exact, utilisez « Produit absent du catalogue ».') : null,
+      aRelancer && iaActive() && navigator.onLine && !g.enCours ? h('button', { type: 'button', class: 'btn petit', 'data-act': 'ia-analyser', 'data-v': c }, '🤖 Analyser les photos') : null);
   }
 
   // Liste des problèmes bloquants, par étape
@@ -395,6 +561,13 @@ const Veille = (() => {
     V.corps.addEventListener('click', surClic);
     V.corps.addEventListener('input', surSaisie);
     V.corps.addEventListener('change', surChangement);
+    // Liste mise à jour par l'IA pendant une saisie : redessinée quand le champ est quitté
+    V.corps.addEventListener('focusout', () => setTimeout(() => {
+      if (!V || !V.iaARedessiner) return;
+      const a = document.activeElement;
+      if (a && a.tagName === 'INPUT' && V.corps.contains(a)) return;
+      V.iaARedessiner = false; rendre();
+    }, 250));
     aller(0);
   }
 
@@ -589,6 +762,7 @@ const Veille = (() => {
         h('div', { class: 'puces' }, EMPLACEMENTS.filter(e => !ouverts.has(e)).map(e =>
           h('button', { type: 'button', 'data-act': 'emplacement', 'data-v': c, 'data-e': e }, '+ ' + e)))) : null,
       envoyees ? h('small', { class: 'discret' }, `${envoyees} photo(s) déjà envoyée(s)`) : null));
+    blocs.push(blocIA(c));
 
     // Produits relevés, groupés par marque
     const ids = Object.keys(f.lignes).filter(id => V.parId[id] && V.parId[id].CATEGORIE === c)
@@ -702,10 +876,19 @@ const Veille = (() => {
       champ === 'prix'
         ? h('small', { class: 'mini-info', 'data-info': info || '' }, hors ? texteFourchette(hors) : info || '')
         : info ? h('small', { class: 'mini-info' }, info) : null);
-    return h('div', { class: 'produit' + (absent ? ' absent' : '') },
-      h('div', { class: 'produit-tete' }, vignetteProduit(id), h('span', { class: 'produit-nom' }, court),
+    // Repères IA : reconnu sur la photo, doute entre deux références, ou produit de la dernière visite non vu
+    const g = l.ia || absent || !l.repris ? null : agregerIA(V.fiche, p.CATEGORIE);
+    const nonVu = g && g.complet && !g.agg[id];
+    const doute = l.ia && l.ia.doute_avec && V.parId[l.ia.doute_avec] && !V.fiche.lignes[l.ia.doute_avec] ? V.parId[l.ia.doute_avec] : null;
+    const badge = absent ? null : l.ia
+      ? h('span', { class: 'badge-ia' + (l.ia.confiance === 'haute' ? '' : ' doute') }, l.ia.confiance === 'haute' ? '🤖 vu' : '🤖 à vérifier')
+      : nonVu ? h('span', { class: 'badge-ia non-vu' }, 'non vu sur les photos') : null;
+    return h('div', { class: 'produit' + (absent ? ' absent' : '') + (l.ia && l.ia.confiance !== 'haute' ? ' ia-doute' : '') },
+      h('div', { class: 'produit-tete' }, vignetteProduit(id), h('span', { class: 'produit-nom' }, court, badge ? ' ' : null, badge),
         h('button', { class: 'btn petit' + (absent ? ' danger' : ''), 'data-act': 'absent', 'data-v': id },
           absent ? 'Absent · remettre' : l.repris ? 'Absent' : 'Retirer')),
+      doute && !absent ? h('div', { class: 'ia-doute-choix' }, h('small', {}, 'Ou bien :'),
+        h('button', { type: 'button', class: 'btn petit', 'data-act': 'ia-echanger', 'data-v': id }, `c'est ${doute.NOM_SYSTEME}`)) : null,
       absent ? null : h('div', { class: 'valeurs' },
         mini('Prix', 'prix', l.repris ? (vide(l.repris.prix) ? 'prix précédent inconnu' : `dernier : ${l.repris.prix} F`) : null),
         modeFacing() === 'saisie' ? mini('Facing rayon', 'facing') : null,
@@ -735,8 +918,10 @@ const Veille = (() => {
       case 'ajouter': f.lignes[v] = { present: true, prix: '', facing: '' }; toucher(v); break;
       case 'absent': {
         const l = f.lignes[v];
-        if (!l.repris) delete f.lignes[v];          // ajouté par erreur : on le retire
-        else l.present = l.present === false;        // repris : bascule présent / absent
+        if (!l.repris) {                             // ajouté par erreur (ou proposé à tort par l'IA) : on le retire
+          if (l.ia) (f.iaRejets = f.iaRejets || {})[v] = true;
+          delete f.lignes[v];
+        } else l.present = l.present === false;      // repris : bascule présent / absent
         toucher(v);
         break;
       }
@@ -745,7 +930,27 @@ const Veille = (() => {
         f.photos[v].splice(i, 1);
         if (f.liens[v]) f.liens[v].splice(i, 1);
         if (f.emp && f.emp[v]) f.emp[v].splice(i, 1);
-        if (f.meta && f.meta[v]) f.meta[v].splice(i, 1);
+        if (f.meta && f.meta[v]) { const [mt] = f.meta[v].splice(i, 1); if (mt && mt.uid && f.ia) delete f.ia[mt.uid]; }
+        appliquerIA(f, v, V.parId);                  // les produits vus seulement sur cette photo ne sont plus proposés
+        break;
+      }
+      case 'ia-analyser':
+        ((f.meta || {})[v] || []).forEach((mt, i) => { if (mt && mt.uid && !(f.ia && f.ia[mt.uid] && f.ia[mt.uid].statut === 'ok')) analyser(v, i); });
+        return;
+      case 'ia-ajouter': {                          // suggestion peu sûre confirmée par le merchandiser
+        const s = agregerIA(f, V.parId[v].CATEGORIE).agg[v] || {};
+        f.lignes[v] = { present: true, prix: s.prix || '', facing: modeFacing() === 'saisie' ? s.facing || '' : '', parIA: true, touche: true,
+          ia: { confiance: s.confiance || 'basse', doute_avec: null, facing: s.facing || 0, facingSec: s.facingSec || 0, prix: s.prix || null } };
+        toucher(v);
+        break;
+      }
+      case 'ia-echanger': {                         // l'IA a hésité entre deux références : le merchandiser choisit l'autre
+        const l = f.lignes[v], autre = l.ia.doute_avec;
+        f.lignes[autre] = { present: true, prix: l.repris ? '' : l.prix, facing: l.facing, facingSec: l.facingSec, touche: true,
+          ia: Object.assign({}, l.ia, { confiance: 'haute', doute_avec: null, corrige: v }) };
+        (f.iaRejets = f.iaRejets || {})[v] = true;
+        if (l.repris) delete l.ia; else delete f.lignes[v];   // repris : reste à confirmer comme les autres produits de la dernière visite
+        toucher(autre);
         break;
       }
       case 'camera': cameraGuidee(v, b.dataset.e); return;
@@ -778,6 +983,7 @@ const Veille = (() => {
       const val = t.value.replace(/\D/g, '');
       if (val !== t.value) t.value = val;
       V.fiche.lignes[t.dataset.ref][t.dataset.champ] = val === '' ? '' : Number(val);
+      V.fiche.lignes[t.dataset.ref].touche = true;   // modifié à la main : l'IA ne le retire plus
       toucher(t.dataset.ref);
       sauver();
       majNav();
@@ -960,12 +1166,23 @@ const Veille = (() => {
     // Facing total par segment (base de la part de linéaire) ; vide tant que les facings viennent des photos
     const totaux = totauxFacing(f, parId);
     for (const s of Recensement.SEGMENTS) visite['FACING_TOTAL ' + s.nom] = modeFacing() === 'saisie' ? (totaux[s.nom] || 0) : '';
+    // Analyse IA : ce que l'IA a proposé, à côté de ce que le merchandiser a validé (mesure de fiabilité, apprentissage du futur moteur)
+    const avecIA = Object.values(f.ia || {}).some(a => a.statut === 'ok');
+    const iaParCat = {};
+    if (avecIA) {
+      for (const c of CATEGORIES) iaParCat[c] = agregerIA(f, c);
+      visite.IA_PHOTOS_ANALYSEES = Object.values(iaParCat).reduce((t, g) => t + g.ok, 0);
+      visite.IA_REJETES = Object.keys(f.iaRejets || {}).join(' ');
+    }
     const releves = lignes.filter(([id]) => !f.absentes[parId[id].CATEGORIE]).map(([id, l]) => {
       const p = parId[id];
       const hors = horsFourchette(id, l, p);
+      const g = iaParCat[p.CATEGORIE], s = g && g.agg[id];
+      const ia = !avecIA ? {} : !g || !g.ok ? { IA_DETECTE: '', IA_CONFIANCE: '', FACING_IA: '', PRIX_IA: '' }
+        : { IA_DETECTE: s ? 'OUI' : 'NON', IA_CONFIANCE: s ? s.confiance : '', FACING_IA: s ? s.facing : '', PRIX_IA: s && s.prix ? s.prix : '' };
       // Format allégé (11 colonnes) : magasin, merchandiser, marque, format… se retrouvent dans les onglets
       // Visites (_id_visite) et Catalogue (REF_ID). Le volume de la feuille est divisé par deux.
-      return {
+      return Object.assign({
         _id_visite: f.id, DATE: f.valeurs.DATE, MAGASIN_CODE: f.valeurs.MAGASIN, REF_ID: id, SEGMENT_FACING: Recensement.segmentFacing(p),
         PRESENT: l.present === true ? 'OUI' : 'NON', PRIX: l.present === true ? l.prix : '',
         PRIX_REPRIS: l.present !== true ? '' : l.repris ? (String(l.prix) === String(l.repris.prix) ? 'INCHANGE' : 'MODIFIE') : 'NOUVEAU',
@@ -973,7 +1190,7 @@ const Veille = (() => {
         // FACING = rayon principal, seul compté dans le facing total ; FACING_SECONDAIRE = autres emplacements
         FACING: l.present === true && modeFacing() === 'saisie' ? l.facing : '',
         FACING_SECONDAIRE: l.present === true && modeFacing() === 'saisie' ? (Number(l.facingSec) || 0) : '',
-      };
+      }, ia);
     });
     return { visite, releves };
   }
@@ -991,6 +1208,12 @@ const Veille = (() => {
     let n = 0;
     for (let k = 0; k <= i; k++) if (empDe(f, c, k) === e) n++;
     return n;
+  }
+
+  // Total des facings comptés par l'IA sur une photo (vide si la photo n'a pas été analysée)
+  function facingsIA(f, mt) {
+    const a = mt && mt.uid && (f.ia || {})[mt.uid];
+    return a && a.statut === 'ok' ? a.produits.reduce((t, x) => t + (x.facing || 0), 0) : '';
   }
 
   async function nbAEnvoyer() { return (await DB.tout()).filter(f => f.form === FORM && f.statut === 'finalisee').length; }
@@ -1042,7 +1265,7 @@ const Veille = (() => {
           // Bande déjà comptée sur la photo précédente : ne pas y recompter les produits (centre dans la bande)
           PRISE: mt.prise === 'guidee' ? 'GUIDEE' : 'LIBRE', RECOUVREMENT_COTE: { droite: 'GAUCHE', bas: 'HAUT' }[mt.direction] || '',
           RECOUVREMENT_PCT: mt.recouvrement ? Math.round(mt.recouvrement * 100) : 0,
-          LIEN: lien, FACINGS_CALCULES: '' });
+          LIEN: lien, FACINGS_CALCULES: facingsIA(f, mt) });
       });
       for (const cle of equipCles(f)) {
         const lien = f.equip.liens[cle];

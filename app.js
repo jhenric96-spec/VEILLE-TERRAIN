@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.14.3';
+const VERSION_APP = '1.16.0';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -574,6 +574,13 @@ function afficherReglages() {
       h('label', { class: 'case' }, h('input', { type: 'radio', name: 'facing', checked: r.facingMode === 'saisie',
         onchange: () => { Reglages.maj(x => { x.facingMode = 'saisie'; }); toast('Facings : saisis par le merchandiser'); } }),
         ' Saisis par le merchandiser'),
+      h('hr'),
+      h('h3', {}, 'Analyse des photos par l\'IA'),
+      h('label', { class: 'case' }, h('input', { type: 'checkbox', checked: r.iaPhotos !== false,
+        onchange: ev => { Reglages.maj(x => { x.iaPhotos = ev.target.checked; delete x.iaIndispo; }); toast(ev.target.checked ? 'Analyse IA activée' : 'Analyse IA désactivée'); } }),
+        ' Proposer la liste des produits à partir des photos du rayon (en ligne)'),
+      h('small', { class: 'aide' }, 'Chaque photo est analysée par le serveur : produits reconnus, facings et prix lisibles sont proposés, '
+        + 'le merchandiser vérifie et corrige. Sans réseau, la saisie reste classique.'),
       h('hr'),
       h('button', { class: 'btn danger', onclick: async () => {
         const env = (await DB.tout()).filter(f => f.statut === 'envoyee');

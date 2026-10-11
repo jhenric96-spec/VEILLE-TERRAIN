@@ -323,3 +323,13 @@ label.case.champ { flex-direction: row; }
   opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; font-size: .92rem;
 }
 #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Analyse IA des photos : état sous les photos, repères sur les produits */
+.bloc-ia { margin: 8px 0 12px; padding: 10px 12px; border-radius: var(--rayon); background: var(--surface); border: 1px dashed var(--primaire); display: grid; gap: 6px; }
+.ia-etat { margin: 0; font-weight: 600; color: var(--primaire); }
+.ia-suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.badge-ia { display: inline-block; font-size: .72rem; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--oui-fond); color: var(--oui); white-space: nowrap; }
+.badge-ia.doute { background: var(--avert-fond); color: var(--avert); }
+.badge-ia.non-vu { background: var(--non-fond); color: var(--non); }
+.produit.ia-doute { border-left: 3px solid var(--avert); }
+.ia-doute-choix { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; color: var(--avert); }
