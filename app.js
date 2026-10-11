@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.17.2';
+const VERSION_APP = '1.17.3';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -761,12 +761,15 @@ async function ouvrirFiche(id, nouvelle = false) {
   const fiche = await DB.lire(id);
   fiche.confirme = fiche.confirme || {};
   const F = FORMS[fiche.form];
+  const geo = F.champs.find(c => c.t === 'geopoint');
+  // Brouillon rouvert : la localisation enregistrée est effacée et reprise sur place
+  const brouillon = !nouvelle && fiche.statut === 'brouillon';
+  if (geo && brouillon && fiche.valeurs[geo.n]) { fiche.valeurs[geo.n] = ''; await DB.mettre(fiche); }
   const autres = (await DB.tout()).filter(f => f.id !== id && f.form === fiche.form);
   E = { F, fiche, etape: 0, blocs: {}, widgets: {}, montrerManquants: false, autres, vis: {} };
   history.pushState({ vue: 'fiche' }, '');
   construireEditeur();
-  const geo = F.champs.find(c => c.t === 'geopoint');
-  if (nouvelle && geo) capturerGps(geo.n);
+  if (geo && (nouvelle || brouillon)) capturerGps(geo.n);
 }
 
 /* ---------- Éditeur ---------- */
@@ -1241,6 +1244,9 @@ function distance(a1, o1, a2, o2) {
 function capturerGps(n) {
   if (!navigator.geolocation) return toast('GPS indisponible sur cet appareil');
   const ficheId = E.fiche.id;
+  const debut = Date.now();
+  // Positions des autres fiches de l'appareil : le téléphone renvoie souvent d'abord sa dernière position connue
+  const anciennes = new Set(E.autres.map(f => String(f.valeurs[n] || '').split(' ').slice(0, 2).map(x => Number(x).toFixed(6)).join(',')));
   let meilleur = null;
   E.gps = { n, msg: 'Recherche de la position…' };
   synchroniserWidget(n);
@@ -1253,6 +1259,11 @@ function capturerGps(n) {
   // maximumAge: 0 force une nouvelle mesure (évite les positions en cache constatées sous Kobo).
   const id = navigator.geolocation.watchPosition(p => {
     const c = p.coords;
+    // Position en cache (relevée avant cette capture) ou identique à une autre fiche : ignorée, on attend la position actuelle
+    if ((p.timestamp && p.timestamp < debut - 5000) || anciennes.has(`${c.latitude.toFixed(6)},${c.longitude.toFixed(6)}`)) {
+      if (E && E.fiche.id === ficheId && E.gps) { E.gps.msg = 'Recherche de la position actuelle…'; synchroniserWidget(n); }
+      return;
+    }
     if (!meilleur || c.accuracy < Number(meilleur.split(' ')[3])) meilleur = `${c.latitude} ${c.longitude} ${c.altitude || 0} ${c.accuracy}`;
     if (E && E.fiche.id === ficheId && E.gps) { E.gps.msg = `Affinage… ±${Math.round(c.accuracy)} m`; synchroniserWidget(n); }
     if (c.accuracy <= 15) fin();

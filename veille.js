@@ -198,13 +198,16 @@ const Veille = (() => {
     await chargerReferentiels();
     const fiche = await DB.lire(id);
     fiche.equip = fiche.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };   // visites créées avant l'étape Équipements
+    // Brouillon rouvert : la position enregistrée (peut-être prise ailleurs ou il y a longtemps) est effacée et reprise sur place
+    const brouillon = !nouvelleVisite && fiche.statut === 'brouillon';
+    if (brouillon && fiche.valeurs.GPS) { fiche.valeurs.GPS = ''; await DB.mettre(fiche); }
     const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('('));
     V = { fiche, cat, parId: Object.fromEntries(cat.map(p => [p.ID, p])), etape: 0, montrer: false, mini: await Recensement.miniatures() };
     if (fiche.ia) CATEGORIES.forEach(c => appliquerIA(fiche, c, V.parId));   // analyses arrivées visite fermée
     V.gpsAnciens = await positionsPrecedentes(fiche.id);
     history.pushState({ vue: 'veille' }, '');
     construire();
-    if (nouvelleVisite) capturerGps();
+    if (nouvelleVisite || brouillon) capturerGps();
   }
 
   function sauver() {
