@@ -84,7 +84,7 @@ const Recensement = (() => {
       FORMAT: p.FORMAT || '', EMBALLAGE: p.EMBALLAGE || '', UNITES_PAR_LOT: Number(p.UNITES_PAR_LOT) || 1,
       NOM_SYSTEME: p.NOM_SYSTEME || nomSysteme(p), CODE_BARRES: String(p.CODE_BARRES || ''), STATUT: p.STATUT || '',
       // Lien avec l'ancien formulaire Kobo : sert à préremplir la veille avec l'historique Kobo
-      KOBO_PRESENCE: p.KOBO_PRESENCE || '', KOBO_PRIX: p.KOBO_PRIX || '', KOBO_FACING: p.KOBO_FACING || '',
+      KOBO_PRESENCE: p.KOBO_PRESENCE || '', KOBO_PRIX: p.KOBO_PRIX || '',
       // Fourchette de prix : saisie dans le Catalogue (PRIX_MIN / PRIX_MAX) ou prix du marché calculé par le serveur
       PRIX_MIN: Number(String(p.PRIX_MIN || '').replace(/\s/g, '')) || '', PRIX_MAX: Number(String(p.PRIX_MAX || '').replace(/\s/g, '')) || '',
       PRIX_MARCHE: p.PRIX_MARCHE && Number(p.PRIX_MARCHE.prix) > 0 ? { prix: Number(p.PRIX_MARCHE.prix), n: Number(p.PRIX_MARCHE.n) || 0 } : null,
