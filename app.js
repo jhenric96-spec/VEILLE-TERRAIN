@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.17.3';
+const VERSION_APP = '1.17.4';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -434,7 +434,10 @@ async function afficherAccueil() {
 
   if (!r.url) main.append(h('div', { class: 'bandeau' }, 'Téléphone non connecté : les fiches restent sur cet appareil. '
     + 'Scannez le QR code de connexion fourni par votre responsable. ',
+    h('button', { class: 'btn petit', onclick: collerLienConnexion }, '📋 Coller le lien de connexion'), ' ',
     h('button', { class: 'lien', onclick: ouvrirReglages }, 'Responsable : configurer')));
+  const bandeauIos = bandeauInstallationIphone(r);
+  if (bandeauIos) main.append(bandeauIos);
 
   // La veille GMS sur catalogue remplace le formulaire Kobo « gms », gardé pour la liste des magasins et l'historique.
   if (window.Veille) main.append(await Veille.carte());
@@ -1572,6 +1575,56 @@ function blocQrConnexion(r) {
 
 // À l'ouverture d'un lien de connexion (scan du QR code) : enregistre le serveur, demande qui utilise le téléphone,
 // puis télécharge le catalogue, l'historique et les photos.
+/* ---------- iPhone : rester connecté ----------
+   Dans un onglet Safari, iOS efface les données d'un site (connexion, brouillons, fiches non envoyées) après quelques jours
+   sans l'ouvrir. Installée sur l'écran d'accueil, l'application n'est pas concernée. Mais elle démarre alors avec un
+   stockage vide (séparé de Safari) et un QR code scanné s'ouvre dans Safari, pas dans l'application installée :
+   la connexion s'y transfère donc par « Copier le lien » (dans Safari) puis « Coller le lien » (dans l'application). */
+const estIphone = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const estInstallee = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function bandeauInstallationIphone(r) {
+  if (!estIphone() || estInstallee()) return null;
+  return h('div', { class: 'bandeau bandeau-ios' },
+    h('strong', {}, 'iPhone : installez l\'application pour rester connecté'),
+    h('p', {}, 'Ouverte dans Safari, l\'application est effacée par l\'iPhone après quelques jours sans l\'ouvrir '
+      + '(connexion, brouillons et fiches non envoyées). Installée sur l\'écran d\'accueil, elle reste connectée.'),
+    h('ol', {},
+      r.url ? h('li', {}, 'Touchez ', h('button', { class: 'btn petit', onclick: () => copierLienConnexion(r) }, '📋 Copier le lien de connexion'), '.') : null,
+      h('li', {}, 'Touchez Partager ', h('strong', {}, '⬆'), ' en bas de Safari, puis ', h('strong', {}, '« Sur l\'écran d\'accueil »'), '.'),
+      h('li', {}, 'Ouvrez VEILLE TERRAIN depuis la nouvelle icône' + (r.url ? ', puis touchez « Coller le lien de connexion ».' : ' et connectez-la.'))));
+}
+
+async function copierLienConnexion(r) {
+  const lien = lienConnexion(r.url, r.jeton);
+  try { await navigator.clipboard.writeText(lien); toast('Lien copié ✓ Installez l\'application puis collez-le à l\'ouverture.', 6000); }
+  catch (e) { prompt('Copiez ce lien (il contient la clé d\'accès, ne le partagez pas) :', lien); }
+}
+
+// Connexion par un lien collé (application installée sur iPhone, ou lien reçu par message)
+async function collerLienConnexion() {
+  let texte = '';
+  try { texte = await navigator.clipboard.readText(); } catch (e) { /* presse-papiers refusé : saisie manuelle */ }
+  if (!/connexion=/.test(texte)) texte = prompt('Collez ici le lien de connexion (copié depuis Safari ou reçu de votre responsable) :') || '';
+  const i = texte.indexOf('#connexion=');
+  if (i < 0) { if (texte) toast('Ce n\'est pas un lien de connexion VEILLE TERRAIN.', 5000); return; }
+  history.replaceState(history.state, '', location.pathname + location.search + texte.slice(i).trim());
+  await importerConnexion();
+}
+
+// Copie de secours de la connexion dans IndexedDB : si seul le petit stockage (localStorage) a été vidé, elle est restaurée
+async function sauvegarderConnexion() {
+  const r = Reglages.lire();
+  if (r.url) { try { await DB.diversMettre('connexion', { url: r.url, jeton: r.jeton, appareil: r.appareil, memo: r.memo }); } catch (e) { /* sans conséquence */ } }
+}
+async function restaurerConnexion() {
+  if (Reglages.lire().url) return sauvegarderConnexion();
+  try {
+    const c = await DB.diversLire('connexion');
+    if (c && c.url) Reglages.maj(x => { Object.assign(x, c); });
+  } catch (e) { /* rien à restaurer */ }
+}
+
 async function importerConnexion() {
   const cfg = lireLienConnexion(location.hash);
   if (!/connexion=/.test(location.hash)) return;
@@ -1695,4 +1748,4 @@ async function importerDepuisAdresse() {
   toast('Import — ' + bilan.join(' · '), 6000);
 }
 
-importerDepuisAdresse().then(afficherAccueil).then(importerConnexion).then(() => synchroniser({ silencieux: true, actualiser: true }));
+restaurerConnexion().then(importerDepuisAdresse).then(afficherAccueil).then(importerConnexion).then(() => synchroniser({ silencieux: true, actualiser: true }));

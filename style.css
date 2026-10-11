@@ -335,3 +335,7 @@ label.case.champ { flex-direction: row; }
 .badge-ia.non-vu { background: var(--non-fond); color: var(--non); }
 .produit.ia-doute { border-left: 3px solid var(--avert); }
 .ia-doute-choix { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; color: var(--avert); }
+/* iPhone : bandeau d'installation sur l'écran d'accueil */
+.bandeau-ios { display: grid; gap: 6px; border-left: 4px solid var(--avert); }
+.bandeau-ios p { margin: 0; }
+.bandeau-ios ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
