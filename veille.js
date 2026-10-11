@@ -359,7 +359,6 @@ const Veille = (() => {
      produits de la dernière visite non vus signalés (jamais retirés d'office). Le merchandiser valide toujours.
      Sans réseau, ou si l'IA est indisponible, la saisie reste celle d'avant. */
   const IA_PAUSE_MS = 6 * 3600 * 1000;        // serveur sans IA : nouvel essai 6 heures plus tard
-  const IA_DELAI_MS = 180 * 1000;             // une analyse peut prendre 1 à 2 minutes (démarrage du script + IA)
   const ORDRE_CONFIANCE = { haute: 3, moyenne: 2, basse: 1 };
   const iaEnCours = new Set();                 // identifiants des photos en cours d'analyse
   const iaActive = () => {
@@ -394,14 +393,8 @@ const Veille = (() => {
       const derniers = Object.keys(f.lignes).filter(x => f.lignes[x].repris && V.parId[x] && V.parId[x].CATEGORIE === c);
       res = await appelServeur(r.url, { action: 'analysePhoto', jeton: r.jeton, id, appareil: idAppareil(), magasin: f.valeurs.MAGASIN, categorie: c,
         emplacement: empDe(f, c, i), module: numeroModule(f, c, i), recouvrement: mt.recouvrement || 0, direction: mt.direction || '', derniers,
-        data: await reduireData(data, 1600, 0.75) }, IA_DELAI_MS);
-    } catch (e) {
-      // Cause précise, affichée au merchandiser et utile au diagnostic
-      res = { ok: false, raison: e.name === 'AbortError' ? `délai dépassé (${IA_DELAI_MS / 1000} s)`
-        : !navigator.onLine ? 'pas de réseau'
-        : /^HTTP|répondu/.test(e.message || '') ? 'réponse du serveur illisible : ' + e.message
-        : e.message === 'image' ? 'photo illisible' : 'serveur injoignable (' + (e.message || e.name) + ')' };
-    }
+        data: await reduireData(data, 1600, 0.75) });
+    } catch (e) { res = { ok: false, raison: 'pas de réseau' }; }
     iaEnCours.delete(mt.uid);
     // Serveur sans IA (clé non configurée, ancienne version) : on n'insiste pas pendant 6 heures
     if (!res.ok && (res.raison === 'non configuré' || /Action inconnue/.test(res.erreur || ''))) Reglages.maj(x => { x.iaIndispo = maintenant(); });
@@ -511,7 +504,7 @@ const Veille = (() => {
     let etat;
     if (g.enCours) etat = `🤖 Analyse de ${g.enCours} photo(s) en cours… vous pouvez continuer.`;
     else if (g.ok) etat = `🤖 ${reconnus.length} produit(s) reconnu(s)` + (doutes ? ` · ${doutes} à vérifier` : '') + (nonVus ? ` · ${nonVus} non vu(s) sur les photos` : '')
-      + (g.echecs ? ` · ${g.echecs} photo(s) non analysée(s) (${g.raison})` : '');
+      + (g.echecs ? ` · ${g.echecs} photo(s) non analysée(s)` : '');
     else if (g.echecs) etat = `🤖 Analyse impossible (${g.raison}) : saisie classique.`;
     else etat = navigator.onLine ? '🤖 Photos pas encore analysées.' : '🤖 Hors ligne : l\'analyse se fera quand le réseau reviendra (bouton ci-dessous).';
     return h('div', { class: 'bloc-ia' },
