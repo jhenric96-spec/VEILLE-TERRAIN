@@ -201,6 +201,7 @@ const Veille = (() => {
     const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('('));
     V = { fiche, cat, parId: Object.fromEntries(cat.map(p => [p.ID, p])), etape: 0, montrer: false, mini: await Recensement.miniatures() };
     if (fiche.ia) CATEGORIES.forEach(c => appliquerIA(fiche, c, V.parId));   // analyses arrivées visite fermée
+    V.gpsAnciens = await positionsPrecedentes(fiche.id);
     history.pushState({ vue: 'veille' }, '');
     construire();
     if (nouvelleVisite) capturerGps();
@@ -1054,9 +1055,23 @@ const Veille = (() => {
 
   /* ----- GPS ----- */
 
+  // Positions des visites précédentes de cet appareil (« lat,lon » arrondis) : un téléphone renvoie souvent d'abord
+  // sa dernière position connue, celle du magasin précédent ; elle ne doit ni s'afficher ni être enregistrée.
+  const cleGps = (lat, lon) => `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+  async function positionsPrecedentes(idFiche) {
+    const s = new Set();
+    for (const f of await DB.tout()) {
+      if (f.form !== FORM || f.id === idFiche || !f.valeurs.GPS) continue;
+      const [lat, lon] = String(f.valeurs.GPS).split(' ');
+      s.add(cleGps(lat, lon));
+    }
+    return s;
+  }
+
   function capturerGps() {
     if (!navigator.geolocation) return toast('GPS indisponible sur cet appareil');
     const fiche = V.fiche;
+    const debut = Date.now();
     let meilleur = null;
     V.gpsMsg = 'Recherche de la position…';
     if (V.etape === 0) rendre();
@@ -1069,6 +1084,11 @@ const Veille = (() => {
     };
     const id = navigator.geolocation.watchPosition(p => {
       const c = p.coords;
+      // Position en cache (relevée avant cette capture) ou identique à une visite précédente : ignorée, on attend la position actuelle
+      if ((p.timestamp && p.timestamp < debut - 5000) || (V && V.gpsAnciens && V.gpsAnciens.has(cleGps(c.latitude, c.longitude)))) {
+        if (V && V.fiche === fiche) { V.gpsMsg = 'Recherche de la position actuelle…'; if (V.etape === 0) rendre(); }
+        return;
+      }
       if (!meilleur || c.accuracy < Number(meilleur.split(' ')[3])) meilleur = `${c.latitude} ${c.longitude} ${c.altitude || 0} ${c.accuracy}`;
       if (V && V.fiche === fiche) { V.gpsMsg = `Affinage… ±${Math.round(c.accuracy)} m`; if (V.etape === 0) rendre(); }
       if (c.accuracy <= 15) fin();
