@@ -3,7 +3,7 @@
    et envoyées vers une Google Sheet (serveur/Code.gs) quand le réseau est là. */
 'use strict';
 
-const VERSION_APP = '1.14.2';
+const VERSION_APP = '1.14.3';
 const AGE_MAX_HISTORIQUE_JOURS = 120;
 const VERSION_SERVEUR_MIN = 2.0;   // version minimale de serveur/Code.gs (magasins, appareils, prix du marché)
 const TYPES_META = new Set(['start', 'end', 'today', 'deviceid', 'username', 'phonenumber', 'audit', 'calculate', 'begin_group', 'end_group', 'begin_repeat', 'end_repeat']);
@@ -598,7 +598,8 @@ function afficherReglages() {
             const fichier = ev.target.files[0];
             if (!fichier) return;
             try {
-              const seed = JSON.parse(await fichier.text());
+              const texte = await fichier.text();
+              const seed = JSON.parse(texte);
               if (seed.type === 'catalogue' && window.Recensement) {
                 const k = await Recensement.importerCatalogue(seed.produits);
                 toast(`Catalogue importé : ${k} référence(s)`);
@@ -608,7 +609,16 @@ function afficherReglages() {
               const F = FORMS[seed.form];
               if (!F) throw new Error(`formulaire « ${seed.form} » inconnu`);
               const n = await importerHistorique(F, { seed });
-              toast(`Historique importé : ${n} point(s) de vente`);
+              // Envoyé aussi au serveur : préremplissage des autres téléphones, prix du marché et coordonnées GPS des magasins
+              const r = Reglages.lire();
+              let envoi = '';
+              if (r.url && navigator.onLine) {
+                try {
+                  const j = await appelServeur(r.url, { action: 'deposerHistorique', jeton: r.jeton, formulaire: seed.form, titre: F.titre, contenu: texte });
+                  envoi = j.ok ? ' et envoyé au serveur ✓' : ` (non envoyé au serveur : ${j.erreur})`;
+                } catch (e) { envoi = ` (non envoyé au serveur : ${e.message})`; }
+              }
+              toast(`Historique importé : ${n} point(s) de vente${envoi}`, 7000);
             } catch (e) { toast('Fichier refusé : ' + e.message, 6000); }
             ev.target.value = '';
             majEtatHistorique();
@@ -1467,8 +1477,12 @@ function blocReferentiels(r) {
       resultat.hidden = true;
       try {
         const res = await Veille.initialiserReferentiels();
-        montrer(true, `✓ Onglets à jour dans la Google Sheet : ${res.magasins} magasin(s) et ${res.merchandisers} merchandiser(s) ajouté(s) `
-          + `(GPS connu pour ${res.avecGps}/${res.total} magasins). Les téléphones les recevront à leur prochaine actualisation.`);
+        const gps = res.gpsRemplis === undefined
+          ? ' Coordonnées GPS : mettez le script Google à jour (version 2.1) pour qu\'elles soient complétées automatiquement.'
+          : ` Coordonnées GPS complétées : ${res.gpsRemplis} magasin(s)` + (res.gpsManquants
+            ? ` ; ${res.gpsManquants} restent sans GPS. Si l'historique Kobo n'a pas encore été importé, importez-le ci-dessous (« Importer un fichier… ») puis recommencez ; `
+              + 'sinon, saisissez LATITUDE / LONGITUDE dans l\'onglet Magasins (Google Maps : clic droit sur le magasin > cliquer sur les coordonnées pour les copier).' : '.');
+        montrer(true, `✓ Onglets à jour dans la Google Sheet : ${res.magasins} magasin(s) et ${res.merchandisers} merchandiser(s) ajouté(s).${gps}`);
       } catch (e) {
         const msg = /Action inconnue/i.test(e.message) ? 'Le script Google déployé est une ancienne version : recollez la dernière version de Code.gs puis déployez une « Nouvelle version ».' : e.message;
         montrer(false, '✗ ' + msg);

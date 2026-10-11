@@ -96,11 +96,7 @@ const Veille = (() => {
       merchandisers: merchKobo().map(([code, nom]) => ({ code, nom })) });
     if (!j.ok) throw new Error(j.erreur || 'refus du serveur');
     await telechargerReferentiels();
-    if (!liste.some(x => x.lat)) {
-      // Pas d'historique Kobo sur cet appareil : les magasins sont créés sans coordonnées GPS
-      toast('Aucune coordonnée GPS trouvée sur cet appareil (historique Kobo absent) : renseignez LATITUDE / LONGITUDE dans l\'onglet Magasins.', 8000);
-    }
-    return { magasins: j.magasinsAjoutes, merchandisers: j.merchandisersAjoutes, avecGps: liste.filter(x => x.lat).length, total: liste.length };
+    return { magasins: j.magasinsAjoutes, merchandisers: j.merchandisersAjoutes, gpsRemplis: j.gpsRemplis, gpsManquants: j.gpsManquants, avecGps: liste.filter(x => x.lat).length, total: liste.length };
   }
 
   let V = null;   // visite en cours : { fiche, cat, parId, etape, montrer, minuteur }
