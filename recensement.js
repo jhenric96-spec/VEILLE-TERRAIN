@@ -133,8 +133,10 @@ const Recensement = (() => {
         const m = await miniatures();
         const connus = Object.fromEntries(Object.entries(m).map(([id, x]) => [id, x.mid]));
         const j = await appelServeur(r.url, { action: 'miniatures', jeton: r.jeton, connus });
-        if (!j.ok || !j.miniatures || !j.miniatures.length) return;
-        for (const x of j.miniatures) m[x.ID] = { mid: x.mid, data: x.data };
+        if (!j.ok) return;
+        if (!(j.miniatures || []).length && !(j.retirees || []).length) return;
+        for (const id of j.retirees || []) if (m[id] && !String(m[id].mid).startsWith('local:')) delete m[id];   // recensement refusé
+        for (const x of j.miniatures || []) m[x.ID] = { mid: x.mid, data: x.data };
         await DB.diversMettre('miniatures', m);
         if (!j.reste) return;
       }
@@ -152,6 +154,7 @@ const Recensement = (() => {
       const avant = await catalogue();
       const signature = l => l.map(p => [p.ID, p.NOM_SYSTEME, p.CATEGORIE, p.STATUT, p.PHOTO].join('|')).sort().join('\n');
       const n = await importerCatalogue(j.produits);
+      if (j.recensements) await enregistrerDecisions(j.recensements);
       await telechargerMiniatures();
       const change = signature(avant) !== signature(await catalogue());
       // Toujours un message si demandé ; en automatique (ouverture de la page), seulement s'il y a du nouveau
@@ -184,6 +187,38 @@ const Recensement = (() => {
     return ok;
   }
 
+  /* ---------- Suivi des fiches de recensement envoyées ----------
+     Le serveur renvoie, avec le catalogue, la décision prise pour chaque fiche (onglet Recensement) :
+     l'appareil qui a pris la photo affiche ainsi son vrai état, et efface la miniature d'une photo refusée. */
+  async function decisions() { return (await DB.diversLire('recensements')) || {}; }
+
+  async function enregistrerDecisions(etats) {
+    await DB.diversMettre('recensements', etats);
+    const m = await miniatures();
+    let change = false;
+    for (const f of await fiches()) {
+      const e = (etats[f.id] || {}).e, id = f.valeurs.REF_EXISTANTE;
+      if ((e === 'REFUSE' || e === 'EXCLU') && id && m[id] && m[id].mid === 'local:' + f.id) { delete m[id]; change = true; }
+    }
+    if (change) await DB.diversMettre('miniatures', m);
+  }
+
+  // État de la photo d'une référence sur cet appareil : catalogue (photo validée), sinon fiche la plus récente de l'appareil
+  const ETATS_PHOTO = {
+    VALIDEE: ['fait-texte', '✓ photo validée'], A_ENVOYER: ['attente-texte', 'photo à envoyer'],
+    ATTENTE: ['attente-texte', 'photo en attente de validation'], A_CLASSER: ['attente-texte', 'en attente : catégorie à choisir'],
+    REFUSE: ['refus-texte', 'photo refusée : à reprendre'], EXCLU: ['refus-texte', 'exclu par le validateur'],
+    MANQUANTE: ['a-faire-texte', 'photo manquante'],
+  };
+  function etatPhoto(p, locales, dec) {
+    if (p.PHOTO) return 'VALIDEE';
+    const f = locales.filter(x => x.valeurs.REF_EXISTANTE === p.ID).sort((a, b) => String(b.creeLe || '').localeCompare(String(a.creeLe || '')))[0];
+    if (!f) return 'MANQUANTE';
+    if (f.statut !== 'envoyee') return 'A_ENVOYER';
+    const e = (dec[f.id] || {}).e;
+    return e === 'VALIDE' ? 'VALIDEE' : e === 'REFUSE' ? 'REFUSE' : e === 'EXCLU' ? 'EXCLU' : e === 'A_CLASSER' ? 'A_CLASSER' : 'ATTENTE';
+  }
+
   /* ---------- Carte d'accueil ---------- */
 
   // « aujourd'hui à 22:17 » ou « le 09/10/2026 » : date de la dernière mise à jour du catalogue (cartes de l'accueil)
@@ -210,8 +245,9 @@ const Recensement = (() => {
   async function carte() {
     const cat = await catalogue();
     const locales = await fiches();
-    const photographiees = new Set(locales.map(f => f.valeurs.REF_EXISTANTE).filter(Boolean));
-    const avecPhoto = cat.filter(p => p.PHOTO || photographiees.has(p.ID)).length;
+    const dec = await decisions();
+    const avecPhoto = cat.filter(p => p.PHOTO).length;   // seules les photos validées comptent
+    const enValidation = cat.filter(p => ['ATTENTE', 'A_CLASSER'].includes(etatPhoto(p, locales, dec))).length;
     const attente = locales.filter(f => f.statut === 'finalisee').length;
     const connecte = !!Reglages.lire().url;
     const quand = dateMajCatalogue();
@@ -219,7 +255,8 @@ const Recensement = (() => {
       h('div', {},
         h('h2', {}, 'Recensement produits'),
         h('p', { class: 'discret' }, cat.length
-          ? `Catalogue : ${cat.length} réf. · ${avecPhoto} avec photo` + (attente ? ` · ${attente} à envoyer` : '')
+          ? `Catalogue : ${cat.length} réf. · ${avecPhoto} photo(s) validée(s)` + (enValidation ? ` · ${enValidation} en attente de validation` : '')
+            + (attente ? ` · ${attente} à envoyer` : '')
           : connecte ? 'Catalogue pas encore chargé sur cet appareil.' : 'Catalogue non chargé : scannez d\'abord le QR code de connexion.'),
         cat.length && quand ? h('p', { class: 'discret' }, `Catalogue mis à jour ${quand}`) : null),
       h('div', { class: 'carte-actions' },
@@ -234,8 +271,7 @@ const Recensement = (() => {
   async function ouvrir(retourHistorique = true) {
     const cat = await catalogue();
     const locales = await fiches();
-    const faites = new Set(locales.map(f => f.valeurs.REF_EXISTANTE).filter(Boolean));
-    etat = { cat, faites, nb: locales.filter(f => f.creeLe && f.creeLe.slice(0, 10) === aujourdhui()).length };
+    etat = { cat, locales, dec: await decisions(), nb: locales.filter(f => f.creeLe && f.creeLe.slice(0, 10) === aujourdhui()).length };
     if (retourHistorique) history.pushState({ vue: 'recensement' }, '');
     ecranRecherche();
   }
@@ -256,13 +292,13 @@ const Recensement = (() => {
       const mots = sansAccents(recherche.value).split(/\s+/).filter(Boolean);
       const res = etat.cat.filter(p => p.STATUT !== 'EXCLU'
         && (!filtreCat.value || p.CATEGORIE === filtreCat.value)
-        && (!sansPhoto.checked || !(p.PHOTO || etat.faites.has(p.ID)))
+        && (!sansPhoto.checked || ['MANQUANTE', 'REFUSE'].includes(etatPhoto(p, etat.locales, etat.dec)))
         && mots.every(m => p.cle.includes(m)));
       liste.replaceChildren(...res.slice(0, 100).map(p => {
-        const fait = p.PHOTO || etat.faites.has(p.ID);
+        const [classe, texte] = ETATS_PHOTO[etatPhoto(p, etat.locales, etat.dec)];
         return h('button', { type: 'button', class: 'casc-option', onclick: () => ecranFiche(p) },
           h('strong', {}, p.NOM_SYSTEME),
-          h('small', {}, `${p.ID} · ${p.CATEGORIE}`, ' · ', h('span', { class: fait ? 'fait-texte' : 'a-faire-texte' }, fait ? '✓ photo' : 'photo manquante')));
+          h('small', {}, `${p.ID} · ${p.CATEGORIE}`, ' · ', h('span', { class: classe }, texte)));
       }));
       if (res.length > 100) liste.append(h('p', { class: 'discret' }, `${res.length - 100} autres… affinez la recherche.`));
       if (!res.length) liste.append(h('p', { class: 'discret' }, 'Aucune référence trouvée.'));
@@ -276,7 +312,7 @@ const Recensement = (() => {
         h('div', { class: 'bandeau-repris' }, 'Le produit est-il déjà au catalogue ? Cherchez-le et ajoutez sa photo. Sinon, créez une nouvelle référence.'),
         h('button', { class: 'btn primaire large', onclick: () => ecranFiche(null) }, '+ Nouvelle référence (absente du catalogue)'),
         h('div', { class: 'champ' }, recherche, filtreCat,
-          h('label', { class: 'case' }, sansPhoto, ' Seulement les références sans photo'), liste)));
+          h('label', { class: 'case' }, sansPhoto, ' Seulement les références sans photo (ou refusée)'), liste)));
     remplir();
   }
 
@@ -466,7 +502,7 @@ const Recensement = (() => {
     await DB.mettre(fiche);
     // Référence existante : sa photo est utilisable tout de suite sur cet appareil, sans attendre le serveur
     if (p && miniature) await enregistrerMiniature(p.ID, miniature, 'local:' + fiche.id);
-    if (p) etat.faites.add(p.ID);
+    if (p) etat.locales.push(fiche);
     else { etat.derniereCategorie = v.CATEGORIE; etat.cat.push(Object.assign({}, valeurs, { ID: '(en attente)', NOM_SYSTEME: valeurs.NOM_PROPOSE, cle: sansAccents(valeurs.NOM_PROPOSE), PHOTO: true })); }
     etat.nb++;
     toast(`Enregistré : ${valeurs.NOM_PROPOSE}`);
@@ -488,7 +524,7 @@ const Recensement = (() => {
     if (ev.state && ev.state.vue === 'recensement' && etat) setTimeout(() => ecranRecherche(), 0);
   });
 
-  return { carte, nbAEnvoyer, envoyer, telechargerCatalogue, importerCatalogue, catalogue, nomSysteme, formatNormalise,
+  return { carte, nbAEnvoyer, envoyer, telechargerCatalogue, importerCatalogue, catalogue, nomSysteme, formatNormalise, etatPhoto, decisions,
     segmentFacing, SEGMENTS: SEGMENTS.map(s => ({ cat: s.cat, nom: s.nom })), miniatures, telechargerMiniatures, enregistrerMiniature,
     dateMajCatalogue, boutonActualiser };
 })();

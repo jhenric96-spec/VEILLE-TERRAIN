@@ -220,6 +220,8 @@ hr { border: 0; border-top: 1px solid var(--bord); margin: 20px 0; }
 .casc-liste.longue { max-height: none; }
 .fait-texte { color: var(--oui); font-weight: 600; }
 .a-faire-texte { color: var(--avert); font-weight: 600; }
+.attente-texte { color: var(--primaire); font-weight: 600; }
+.refus-texte { color: var(--non); font-weight: 600; }
 .nom-systeme { font-weight: 700; font-size: 1.05rem; letter-spacing: .02em; padding: 8px 10px; background: var(--fond); border-radius: 8px; }
 .case { display: flex; align-items: center; gap: 8px; font-size: .9rem; }
 .case input { width: 20px; height: 20px; }
