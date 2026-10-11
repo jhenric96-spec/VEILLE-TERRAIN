@@ -106,26 +106,36 @@ const Veille = (() => {
 
   /* ---------- Historique : dernière visite du magasin ---------- */
 
+  // Préremplissage depuis l'ancien formulaire Kobo : présence, prix, facing (colonnes KOBO_* du catalogue) et équipements
   function depuisKobo(valeurs, cat) {
     const lignes = {};
     for (const p of cat) {
-      if (p.KOBO_PRESENCE && valeurs[p.KOBO_PRESENCE] === 'oui') lignes[p.ID] = { prix: prixValide(valeurs[p.KOBO_PRIX]) };
+      if (p.KOBO_PRESENCE && valeurs[p.KOBO_PRESENCE] === 'oui') {
+        lignes[p.ID] = { prix: prixValide(valeurs[p.KOBO_PRIX]), facing: p.KOBO_FACING && !vide(valeurs[p.KOBO_FACING]) ? Number(valeurs[p.KOBO_FACING]) : '' };
+      }
     }
     return lignes;
   }
+  const equipKobo = valeurs => ({ frigos: valeurs.NOMBRE_DE_FRIGOS_PRESENTS_PEP ?? '', canCoolers: valeurs.NOMBRE_DE_CAN_COOLER_PRESENTS_ ?? '' });
 
+  // Dernière visite du magasin : appareil, serveur (onglet « Dernières visites ») ou historique Kobo, la plus récente
   async function derniereVisite(cleMag, exclureId, cat) {
     const cands = [];
     for (const f of await DB.tout()) {
       if (f.form !== FORM || f.id === exclureId || f.statut === 'brouillon' || f.valeurs.MAGASIN !== cleMag) continue;
       const lignes = {};
-      for (const id in f.lignes) if (f.lignes[id].present === true) lignes[id] = { prix: f.lignes[id].prix };
-      cands.push({ date: f.valeurs.DATE, source: 'appareil', par: nomMerch(f.valeurs.MERCH), lignes });
+      for (const id in f.lignes) {
+        const l = f.lignes[id];
+        if (l.present === true) lignes[id] = { prix: l.prix, facing: l.facing ?? '', facingSec: l.facingSec ?? '' };
+      }
+      cands.push({ date: f.valeurs.DATE, source: 'appareil', par: nomMerch(f.valeurs.MERCH), lignes,
+        equip: f.equip ? { frigos: f.equip.frigos, canCoolers: f.equip.canCoolers } : null,
+        absentes: CATEGORIES.filter(c => f.absentes && f.absentes[c]) });
     }
     const s = await DB.histLire(`${FORM}|${cleMag}`);
-    if (s) cands.push({ date: s.date, source: 'serveur', par: s.par || '', lignes: s.lignes });
+    if (s) cands.push({ date: s.date, source: 'serveur', par: s.par || '', lignes: s.lignes, equip: s.equip || null, absentes: s.absentes || [] });
     const k = await DB.histLire(`gms|${cleMag}`);
-    if (k) cands.push({ date: k.date, source: 'Kobo', par: k.par || '', lignes: depuisKobo(k.valeurs, cat) });
+    if (k) cands.push({ date: k.date, source: 'Kobo', par: k.par || '', lignes: depuisKobo(k.valeurs, cat), equip: equipKobo(k.valeurs), absentes: [] });
     cands.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.source === 'appareil') - (a.source === 'appareil'));
     const limite = new Date(Date.now() - AGE_MAX_JOURS * 86400000).toISOString().slice(0, 10);
     return cands[0] && cands[0].date >= limite && Object.keys(cands[0].lignes).length ? cands[0] : null;
@@ -138,7 +148,8 @@ const Veille = (() => {
     try {
       const j = await appelServeur(r.url, { action: 'historiqueVeille', jeton: r.jeton });
       if (!j.ok) return;
-      await DB.histMettre((j.visites || []).map(v => ({ cle: `${FORM}|${v.magasin}`, form: FORM, magasin: v.magasin, date: v.date, par: v.par, lignes: v.lignes })));
+      await DB.histMettre((j.visites || []).map(v => ({ cle: `${FORM}|${v.magasin}`, form: FORM, magasin: v.magasin, date: v.date, par: v.par,
+        lignes: v.lignes, equip: v.equip || null, absentes: v.absentes || [] })));
       if ((j.visites || []).length) Reglages.maj(x => { x.histVeilleMaj = maintenant(); });   // vide : nouvel essai au prochain envoi
     } catch (e) { /* nouvel essai à la prochaine synchronisation */ }
   }
@@ -478,8 +489,11 @@ const Veille = (() => {
 
     if (f.prerempli) {
       blocs.push(h('div', { class: 'bandeau-repris' },
-        `Assortiment et prix repris de la visite du ${dateFr(f.prerempli.date)}${f.prerempli.par ? ' (' + f.prerempli.par + ')' : ''}, source ${f.prerempli.source} : `,
-        `${f.prerempli.nb} référence(s). Dans chaque catégorie, marquez les absents, corrigez les prix et touchez « ✓ Conforme » pour les marques identiques.`));
+        `Visite du ${dateFr(f.prerempli.date)}${f.prerempli.par ? ' (' + f.prerempli.par + ')' : ''} reprise (source ${f.prerempli.source}) : `,
+        `${f.prerempli.nb} référence(s) avec leurs prix${modeFacing() === 'saisie' ? ' et facings' : ''}`
+        + (Object.keys(f.prerempli.equip || {}).length ? ', nombre de frigos / can coolers' : '')
+        + ((f.prerempli.absentes || []).length ? `, catégories absentes (${f.prerempli.absentes.join(', ')})` : '')
+        + '. Dans chaque catégorie, marquez les absents, corrigez ce qui a changé et touchez « ✓ Conforme » pour les marques identiques.'));
     } else if (m) {
       blocs.push(h('div', { class: 'bandeau-repris' }, 'Pas de visite récente connue pour ce magasin : ajoutez les produits présents dans chaque catégorie.'));
     }
@@ -517,22 +531,51 @@ const Veille = (() => {
     return Math.round(distance(lat, lon, m.lat, m.lon));
   }
 
+  // Retire ce qu'un préremplissage précédent avait ajouté (changement de magasin)
+  function annulerPrerempli(f) {
+    const p = f.prerempli;
+    if (p) {
+      (p.absentes || []).forEach(c => { delete f.absentes[c]; });
+      Object.keys(p.equip || {}).forEach(k => { if (f.equip[k] === p.equip[k]) f.equip[k] = ''; });
+    }
+    f.lignes = {}; f.confirme = {}; f.prerempli = null;
+  }
+
   async function choisirMagasin(cle) {
     const f = V.fiche;
     if (f.valeurs.MAGASIN === cle) return;
     f.valeurs.MAGASIN = cle;
-    f.lignes = {}; f.confirme = {}; f.prerempli = null;
+    annulerPrerempli(f);
     const d = await derniereVisite(cle, f.id, V.cat);
     if (d) {
       let nb = 0;
+      const saisie = modeFacing() === 'saisie';
+      const num = x => (vide(x) || isNaN(Number(x)) ? '' : Number(x));
       for (const id in d.lignes) {
         if (!V.parId[id]) continue;
-        const prix = prixValide(d.lignes[id].prix);
-        f.lignes[id] = { present: true, prix, facing: '', repris: { prix } };
+        const src = d.lignes[id];
+        const prix = prixValide(src.prix);
+        // Facings repris seulement quand ils sont saisis (en mode photo, ils sont recomptés sur les photos du jour)
+        const facing = saisie ? num(src.facing) : '';
+        const facingSec = saisie ? num(src.facingSec) : '';
+        f.lignes[id] = { present: true, prix, facing, facingSec, repris: { prix, facing, facingSec } };
         nb++;
       }
-      f.prerempli = { date: d.date, par: d.par, source: d.source, nb };
-      toast(`${nb} référence(s) reprise(s) de la visite du ${dateFr(d.date)}`);
+      // Catégories absentes la dernière fois, et sans produit repris : de nouveau marquées absentes (décochables)
+      const reprises = [];
+      for (const c of d.absentes || []) {
+        if (CATEGORIES.includes(c) && !Object.keys(f.lignes).some(id => V.parId[id].CATEGORIE === c)) { f.absentes[c] = true; reprises.push(c); }
+      }
+      // Nombre de frigos et de can coolers (les photos avant / après restent à prendre)
+      const eq = d.equip || {};
+      const equip = {};
+      for (const q of EQUIPEMENTS) {
+        const n = num(eq[q.cle]);
+        if (n !== '' && n >= 0 && n <= NB_MAX_EQUIP && vide(f.equip[q.cle])) { f.equip[q.cle] = n; equip[q.cle] = n; }
+      }
+      f.prerempli = { date: d.date, par: d.par, source: d.source, nb, absentes: reprises, equip };
+      toast(`Visite du ${dateFr(d.date)} reprise : ${nb} référence(s)` + (saisie ? ', prix et facings' : ' et prix')
+        + (Object.keys(equip).length ? ', équipements' : ''));
     }
     sauver();
     rendre();
@@ -548,6 +591,10 @@ const Veille = (() => {
 
     blocs.push(h('label', { class: 'case champ' }, h('input', { type: 'checkbox', checked: absente, 'data-act': 'absente', 'data-v': c }),
       ' Aucun produit de cette catégorie dans le magasin'));
+    if (absente && ((f.prerempli && f.prerempli.absentes) || []).includes(c)) {
+      blocs.push(h('div', { class: 'bandeau-repris' }, `Catégorie absente lors de la visite du ${dateFr(f.prerempli.date)}. `
+        + 'Si des produits sont présents aujourd\'hui, décochez la case ci-dessus.'));
+    }
     if (absente) return h('section', {}, blocs);
 
     // Photos, par emplacement (rayon principal, frigo, devanture caisse…)
@@ -646,6 +693,10 @@ const Veille = (() => {
   function etapeEquipements() {
     const f = V.fiche, e = f.equip;
     const blocs = [h('div', { class: 'section-tete' }, h('h2', {}, 'ÉQUIPEMENTS'))];
+    if (f.prerempli && Object.keys(f.prerempli.equip || {}).length) {
+      blocs.push(h('div', { class: 'bandeau-repris' }, `Nombre d'appareils repris de la visite du ${dateFr(f.prerempli.date)} : vérifiez-le. `
+        + 'Les photos avant / après réaménagement sont à prendre à chaque visite.'));
+    }
     for (const q of EQUIPEMENTS) {
       const n = e[q.cle];
       blocs.push(h('div', { class: 'champ' + (V.montrer && (n === '' || n == null) ? ' manque' : '') },
@@ -708,8 +759,9 @@ const Veille = (() => {
           absent ? 'Absent · remettre' : l.repris ? 'Absent' : 'Retirer')),
       absent ? null : h('div', { class: 'valeurs' },
         mini('Prix', 'prix', l.repris ? (vide(l.repris.prix) ? 'prix précédent inconnu' : `dernier : ${l.repris.prix} F`) : null),
-        modeFacing() === 'saisie' ? mini('Facing rayon', 'facing') : null,
-        modeFacing() === 'saisie' && aSecondaire(V.fiche, p.CATEGORIE) ? mini('Facing hors rayon', 'facingSec', 'non compté dans le total') : null));
+        modeFacing() === 'saisie' ? mini('Facing rayon', 'facing', l.repris && !vide(l.repris.facing) ? `dernier : ${l.repris.facing}` : null) : null,
+        modeFacing() === 'saisie' && (aSecondaire(V.fiche, p.CATEGORIE) || Number(l.facingSec) > 0)
+          ? mini('Facing hors rayon', 'facingSec', l.repris && Number(l.repris.facingSec) > 0 ? `dernier : ${l.repris.facingSec} · non compté` : 'non compté dans le total') : null));
   }
 
   /* ----- Événements ----- */
@@ -729,7 +781,7 @@ const Veille = (() => {
       case 'magasin': choisirMagasin(v); return;
       case 'changer-magasin':
         if (Object.keys(f.lignes).length && !confirm('Changer de magasin efface les produits déjà relevés. Continuer ?')) return;
-        f.valeurs.MAGASIN = ''; f.prerempli = null; f.lignes = {}; f.confirme = {};
+        f.valeurs.MAGASIN = ''; annulerPrerempli(f);
         break;
       case 'conforme': f.confirme[v] = true; break;
       case 'ajouter': f.lignes[v] = { present: true, prix: '', facing: '' }; toucher(v); break;
