@@ -193,14 +193,28 @@ const Recensement = (() => {
   /* ---------- Suivi des fiches de recensement envoyées ----------
      Le serveur renvoie, avec le catalogue, la décision prise pour chaque fiche (onglet Recensement) :
      l'appareil qui a pris la photo affiche ainsi son vrai état, et efface la miniature d'une photo refusée. */
-  async function decisions() { return (await DB.diversLire('recensements')) || {}; }
+  // { etats: { _id: { e, ref } }, recuLe } ; ancien format (1.17.0 à 1.17.4) : la table seule, sans date de réception
+  async function decisions() {
+    const d = (await DB.diversLire('recensements')) || {};
+    return d.etats ? d : { etats: d, recuLe: '' };
+  }
+
+  // Décision d'une fiche envoyée. Une fiche que le serveur ne connaît plus (ligne supprimée de l'onglet Recensement par le
+  // validateur) est une demande rejetée : elle ne doit pas rester « en attente » indéfiniment.
+  function decisionFiche(f, dec) {
+    const e = ((dec.etats || {})[f.id] || {}).e;
+    if (e) return e;
+    return dec.recuLe && f.envoyeLe && f.envoyeLe < dec.recuLe ? 'REFUSE' : 'ATTENTE';
+  }
 
   async function enregistrerDecisions(etats) {
-    await DB.diversMettre('recensements', etats);
+    const dec = { etats, recuLe: maintenant() };
+    await DB.diversMettre('recensements', dec);
     const m = await miniatures();
     let change = false;
     for (const f of await fiches()) {
-      const e = (etats[f.id] || {}).e, id = f.valeurs.REF_EXISTANTE;
+      if (f.statut !== 'envoyee') continue;
+      const e = decisionFiche(f, dec), id = f.valeurs.REF_EXISTANTE;
       if ((e === 'REFUSE' || e === 'EXCLU') && id && m[id] && m[id].mid === 'local:' + f.id) { delete m[id]; change = true; }
     }
     if (change) await DB.diversMettre('miniatures', m);
@@ -218,7 +232,7 @@ const Recensement = (() => {
     const f = locales.filter(x => x.valeurs.REF_EXISTANTE === p.ID).sort((a, b) => String(b.creeLe || '').localeCompare(String(a.creeLe || '')))[0];
     if (!f) return 'MANQUANTE';
     if (f.statut !== 'envoyee') return 'A_ENVOYER';
-    const e = (dec[f.id] || {}).e;
+    const e = decisionFiche(f, dec);
     return e === 'VALIDE' ? 'VALIDEE' : e === 'REFUSE' ? 'REFUSE' : e === 'EXCLU' ? 'EXCLU' : e === 'A_CLASSER' ? 'A_CLASSER' : 'ATTENTE';
   }
 
