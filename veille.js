@@ -363,6 +363,8 @@ const Veille = (() => {
      produits de la dernière visite non vus signalés (jamais retirés d'office). Le merchandiser valide toujours.
      Sans réseau, ou si l'IA est indisponible, la saisie reste celle d'avant. */
   const IA_PAUSE_MS = 6 * 3600 * 1000;        // serveur sans IA : nouvel essai 6 heures plus tard
+  const IA_DELAI_MS = 150 * 1000;             // attente maximale d'une analyse (Google peut être lent quand il est chargé)
+  const IA_RELANCES = () => window.__IA_RELANCES || [60, 180, 300];   // nouveaux essais automatiques d'une photo non analysée (secondes)
   const ORDRE_CONFIANCE = { haute: 3, moyenne: 2, basse: 1 };
   const iaEnCours = new Set();                 // identifiants des photos en cours d'analyse
   const iaActive = () => {
@@ -397,8 +399,8 @@ const Veille = (() => {
       const derniers = Object.keys(f.lignes).filter(x => f.lignes[x].repris && V.parId[x] && V.parId[x].CATEGORIE === c);
       res = await appelServeur(r.url, { action: 'analysePhoto', jeton: r.jeton, id, appareil: idAppareil(), magasin: f.valeurs.MAGASIN, categorie: c,
         emplacement: empDe(f, c, i), module: numeroModule(f, c, i), recouvrement: mt.recouvrement || 0, direction: mt.direction || '', derniers,
-        data: await reduireData(data, 1600, 0.75) });
-    } catch (e) { res = { ok: false, raison: 'pas de réseau' }; }
+        data: await reduireData(data, 1600, 0.75) }, IA_DELAI_MS);
+    } catch (e) { res = { ok: false, raison: e.name === 'AbortError' ? 'délai dépassé' : 'pas de réseau' }; }
     iaEnCours.delete(mt.uid);
     // Serveur sans IA (clé non configurée, ancienne version) : on n'insiste pas pendant 6 heures
     if (!res.ok && (res.raison === 'non configuré' || /Action inconnue/.test(res.erreur || ''))) Reglages.maj(x => { x.iaIndispo = maintenant(); });
@@ -410,6 +412,7 @@ const Veille = (() => {
       (V.fiche.ia = V.fiche.ia || {})[mt.uid] = resultat;
       appliquerIA(V.fiche, c, V.parId);
       sauver();
+      if (!res.ok && res.raison !== 'non configuré' && !/Action inconnue/.test(res.erreur || '')) relancerPlusTard(c, mt.uid);
       redessinerIA(c, res.ok);
     } else {
       const fiche = await DB.lire(id);
@@ -417,6 +420,22 @@ const Veille = (() => {
       (fiche.ia = fiche.ia || {})[mt.uid] = resultat;
       await DB.mettre(fiche);
     }
+  }
+
+  // Photo non analysée (Google surchargé, réseau, délai) : nouvel essai automatique tant que la visite est ouverte,
+  // sans que le merchandiser ait à toucher « Analyser les photos » (3 essais : après 1, 3 et 5 minutes)
+  function relancerPlusTard(c, uid) {
+    V.iaRelances = V.iaRelances || {};
+    const n = V.iaRelances[uid] || 0;
+    if (n >= IA_RELANCES().length) return;
+    V.iaRelances[uid] = n + 1;
+    (V.iaRelanceA = V.iaRelanceA || {})[uid] = Date.now() + IA_RELANCES()[n] * 1000;
+    const fiche = V.fiche.id;
+    setTimeout(() => {
+      if (!V || V.fiche.id !== fiche) return;   // visite fermée : le bouton « Analyser les photos » reste disponible à la réouverture
+      const i = ((V.fiche.meta || {})[c] || []).findIndex(m => m && m.uid === uid);
+      if (i >= 0) analyser(c, i);
+    }, IA_RELANCES()[n] * 1000);
   }
 
   // Redessine l'étape si elle est affichée, sans couper une saisie en cours (repris quand le champ est quitté)
@@ -509,7 +528,13 @@ const Veille = (() => {
     if (g.enCours) etat = `🤖 Analyse de ${g.enCours} photo(s) en cours… vous pouvez continuer.`;
     else if (g.ok) etat = `🤖 ${reconnus.length} produit(s) reconnu(s)` + (doutes ? ` · ${doutes} à vérifier` : '') + (nonVus ? ` · ${nonVus} non vu(s) sur les photos` : '')
       + (g.echecs ? ` · ${g.echecs} photo(s) non analysée(s)` : '');
-    else if (g.echecs) etat = `🤖 Analyse impossible (${g.raison}) : saisie classique.`;
+    else if (g.echecs) {
+      // Nouvel essai automatique prévu pour une photo de cette catégorie ?
+      const prochain = ((f.meta || {})[c] || []).map(m => m && (V.iaRelanceA || {})[m.uid]).filter(x => x && x > Date.now()).sort()[0];
+      etat = prochain
+        ? `🤖 Analyse impossible pour l'instant (${g.raison}) : nouvel essai automatique dans ${Math.max(1, Math.round((prochain - Date.now()) / 60000))} min. Vous pouvez continuer.`
+        : `🤖 Analyse impossible (${g.raison}) : saisie classique.`;
+    }
     else etat = navigator.onLine ? '🤖 Photos pas encore analysées.' : '🤖 Hors ligne : l\'analyse se fera quand le réseau reviendra (bouton ci-dessous).';
     return h('div', { class: 'bloc-ia' },
       h('p', { class: 'ia-etat' }, etat),
