@@ -412,7 +412,8 @@ const Veille = (() => {
       (V.fiche.ia = V.fiche.ia || {})[mt.uid] = resultat;
       appliquerIA(V.fiche, c, V.parId);
       sauver();
-      if (!res.ok && res.raison !== 'non configuré' && !/Action inconnue/.test(res.erreur || '')) relancerPlusTard(c, mt.uid);
+      // Nouvel essai automatique en cas de saturation ou de coupure, jamais en cas de quota épuisé (il ne ferait que l'aggraver)
+      if (!res.ok && res.raison !== 'non configuré' && !/quota/i.test(res.raison || '') && !/Action inconnue/.test(res.erreur || '')) relancerPlusTard(c, mt.uid);
       redessinerIA(c, res.ok);
     } else {
       const fiche = await DB.lire(id);
