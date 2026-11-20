@@ -1,6 +1,6 @@
 /* Veille GMS basée sur le catalogue produits : une étape par catégorie, photos du rayon,
-   assortiment et prix repris de la dernière visite. Les facings seront calculés à partir des photos
-   (ou saisis, selon le réglage). Données envoyées en format long (une ligne par référence relevée).
+   assortiment et prix repris de la dernière visite. Les facings sont saisis à la main par l'agent.
+   Données envoyées en format long (une ligne par référence relevée).
    S'appuie sur app.js (h, DB, toast, Reglages…) et recensement.js (catalogue). */
 'use strict';
 
@@ -29,7 +29,8 @@ const Veille = (() => {
      à défaut les listes de l'ancien formulaire Kobo. Les codes magasin restent ceux de Kobo (CANAL/ENSEIGNE/MAGASIN),
      ce qui garde le lien avec l'historique. */
   const F = () => FORMS.gms;
-  const modeFacing = () => Reglages.lire().facingMode || 'photo';
+  // Facings saisis à la main par les agents, sur tous les téléphones (décision du 20/11/2026) : le mode « par photo » n'est plus proposé
+  const modeFacing = () => 'saisie';
   const SEUIL_GPS_M = 300;            // au-delà, la position est signalée comme éloignée du magasin
   const ECART_PRIX = 0.3;             // fourchette automatique : ±30 % autour du prix du marché ou du dernier prix
   let REF = null;                     // référentiels téléchargés { magasins: [...], merchandisers: [...] }
@@ -481,12 +482,11 @@ const Veille = (() => {
 
   // Applique la synthèse à la liste. Idempotent : rejoué après chaque analyse, suppression de photo ou réouverture.
   // - référence reconnue (confiance haute ou moyenne) absente de la liste : ajoutée, marquée « parIA » ;
-  // - facings et prix lus : remplis seulement si le champ est vide ou s'il contient encore la valeur proposée par l'IA ;
+  // - prix lu : rempli seulement si le champ est vide ou s'il contient encore la valeur proposée par l'IA (jamais les facings) ;
   // - un produit retiré par le merchandiser n'est plus jamais reproposé dans cette visite (iaRejets).
   function appliquerIA(f, c, parId) {
     const { agg } = agregerIA(f, c);
     f.iaRejets = f.iaRejets || {};
-    const saisie = modeFacing() === 'saisie';
     for (const id in f.lignes) {          // références qui ne sont plus reconnues (photo supprimée)
       const l = f.lignes[id];
       if (!parId[id] || parId[id].CATEGORIE !== c || !l.ia || agg[id] || l.ia.corrige) continue;
@@ -506,7 +506,7 @@ const Veille = (() => {
         if (val === null || val === undefined || val === '') return;
         if (vide(l[champ]) || l[champ] === l[memo]) { l[champ] = val; l[memo] = val; }
       };
-      if (saisie) { remplir('facing', s.facing, 'iaFacing'); if (s.facingSec) remplir('facingSec', s.facingSec, 'iaFacingSec'); }
+      // Facings : jamais pré-remplis, l'agent compte lui-même ; le comptage de l'IA reste dans l.ia (colonne FACING_IA) pour la mesurer
       if (s.prix && !l.repris) remplir('prix', s.prix, 'iaPrix');   // produit repris : le prix de la dernière visite reste proposé
     }
   }
@@ -969,7 +969,7 @@ const Veille = (() => {
         return;
       case 'ia-ajouter': {                          // suggestion peu sûre confirmée par le merchandiser
         const s = agregerIA(f, V.parId[v].CATEGORIE).agg[v] || {};
-        f.lignes[v] = { present: true, prix: s.prix || '', facing: modeFacing() === 'saisie' ? s.facing || '' : '', parIA: true, touche: true,
+        f.lignes[v] = { present: true, prix: s.prix || '', facing: '', parIA: true, touche: true,
           ia: { confiance: s.confiance || 'basse', doute_avec: null, facing: s.facing || 0, facingSec: s.facingSec || 0, prix: s.prix || null } };
         toucher(v);
         break;
