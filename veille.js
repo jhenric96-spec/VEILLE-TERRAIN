@@ -12,8 +12,8 @@ const Veille = (() => {
   const ETAPE_EQUIP = ETAPES.length - 1;
   // Équipements repris de l'ancien formulaire Kobo : photos avant / après réaménagement de chaque appareil
   const EQUIPEMENTS = [
-    { cle: 'frigos', nom: 'FRIGO', titre: 'Nombre de frigos présents', aide: 'PEPSI / PEPSI MAX / 7 UP / MIRINDA / KIRENE / PRESSEA' },
-    { cle: 'canCoolers', nom: 'CAN COOLER', titre: 'Nombre de can coolers présents', aide: 'PEPSI / 7 UP' },
+    { cle: 'frigos', nom: 'FRIGO', titre: 'Nombre de frigos présents', aide: 'Frigos PEPSI / PEPSI MAX / 7 UP / MIRINDA / KIRENE / PRESSEA. 0 s’il n’y en a pas. Pour chaque frigo : une photo avant et une photo après réaménagement.' },
+    { cle: 'canCoolers', nom: 'CAN COOLER', titre: 'Nombre de can coolers présents', aide: 'Can coolers PEPSI / 7 UP. 0 s’il n’y en a pas. Pour chaque appareil : une photo avant et une photo après réaménagement.' },
   ];
   const NB_MAX_EQUIP = 4;
   const MOMENTS = ['AVANT', 'APRES'];
@@ -566,6 +566,8 @@ const Veille = (() => {
         if (!p || p.CATEGORIE !== c || l.present !== true) continue;
         if (!(Number(l.prix) > 0)) pb[i + 1].push(`prix ${p.NOM_SYSTEME}`);
         if (modeFacing() === 'saisie' && vide(l.facing)) pb[i + 1].push(`facing ${p.NOM_SYSTEME}`);
+        // Seul le rayon principal est relevé : un produit présent a au moins 1 facing, sinon il est absent
+        else if (modeFacing() === 'saisie' && Number(l.facing) === 0) pb[i + 1].push(`facing ${p.NOM_SYSTEME} à 0 (marquez-le « Absent »)`);
       }
       // Facing total du rayon : saisi pour chaque segment, et au moins égal aux facings des produits relevés
       const sommes = totauxFacing(f, V.parId);
@@ -601,6 +603,15 @@ const Veille = (() => {
       V.corps, h('footer', { class: 'pied' }, V.prec, V.suiv));
     V.corps.addEventListener('click', surClic);
     V.corps.addEventListener('input', surSaisie);
+    // Touche « Suivant » du clavier : passe au champ chiffré suivant (prix → facing → produit suivant → facings totaux)
+    V.corps.addEventListener('keydown', ev => {
+      const t = ev.target;
+      if (ev.key !== 'Enter' || t.tagName !== 'INPUT' || !(t.dataset.ref || t.dataset.total)) return;
+      ev.preventDefault();
+      const champs = [...V.corps.querySelectorAll('input[data-ref], input[data-total]')];
+      const suivant = champs[champs.indexOf(t) + 1];
+      if (suivant) { suivant.focus(); suivant.select(); } else t.blur();
+    });
     V.corps.addEventListener('change', surChangement);
     // Liste mise à jour par l'IA pendant une saisie : redessinée quand le champ est quitté
     V.corps.addEventListener('focusout', () => setTimeout(() => {
@@ -624,6 +635,13 @@ const Veille = (() => {
     const n = pb[V.etape].length;
     V.nav.replaceChildren(h('small', {}, `Étape ${V.etape + 1}/${ETAPES.length}`), h('span', {}, ETAPES[V.etape], ' ▾'),
       h('small', { class: n ? 'a-faire' : 'fait' }, n ? `${n} point(s) à compléter` : '✓ complet'));
+    // Ce qui reste à faire sur cet écran, en clair (mis à jour à chaque saisie)
+    if (V.reste) {
+      const liste = pb[V.etape];
+      V.reste.hidden = !liste.length || !!(V.etape > 0 && V.etape < ETAPE_EQUIP && V.fiche.absentes[CATEGORIES[V.etape - 1]]);
+      V.reste.replaceChildren(h('strong', {}, `Reste à compléter sur cet écran (${liste.length}) :`),
+        h('ul', {}, liste.slice(0, 12).map(x => h('li', {}, x)), liste.length > 12 ? h('li', {}, `… et ${liste.length - 12} autre(s)`) : null));
+    }
     V.prec.disabled = V.etape === 0;
     V.suiv.textContent = V.etape === ETAPES.length - 1 ? 'Terminer ✓' : 'Suivant →';
   }
@@ -642,7 +660,8 @@ const Veille = (() => {
 
   function rendre() {
     const y = window.scrollY;
-    V.corps.replaceChildren(V.etape === 0 ? etapeIdentification() : V.etape === ETAPE_EQUIP ? etapeEquipements() : etapeCategorie(CATEGORIES[V.etape - 1]));
+    V.reste = h('div', { class: 'reste', hidden: true });
+    V.corps.replaceChildren(V.etape === 0 ? etapeIdentification() : V.etape === ETAPE_EQUIP ? etapeEquipements() : etapeCategorie(CATEGORIES[V.etape - 1]), V.reste);
     window.scrollTo(0, y);
     majNav();
   }
@@ -692,8 +711,9 @@ const Veille = (() => {
 
     if (f.prerempli) {
       blocs.push(h('div', { class: 'bandeau-repris' },
-        `Assortiment et prix repris de la visite du ${dateFr(f.prerempli.date)}${f.prerempli.par ? ' (' + f.prerempli.par + ')' : ''}, source ${f.prerempli.source} : `,
-        `${f.prerempli.nb} référence(s). Dans chaque catégorie, marquez les absents, corrigez les prix et touchez « ✓ Conforme » pour les marques identiques.`));
+        `Produits, prix et facings repris de la visite du ${dateFr(f.prerempli.date)}${f.prerempli.par ? ' (' + f.prerempli.par + ')' : ''} : `,
+        `${f.prerempli.nb} référence(s). Dans chaque catégorie : marquez « Absent » les produits qui ne sont plus en rayon, corrigez les prix et les facings `
+        + 'qui ont changé, puis touchez « ✓ Conforme » sous chaque marque vérifiée.'));
     } else if (m) {
       blocs.push(h('div', { class: 'bandeau-repris' }, 'Pas de visite récente connue pour ce magasin : ajoutez les produits présents dans chaque catégorie.'));
     }
@@ -764,6 +784,11 @@ const Veille = (() => {
     blocs.push(h('label', { class: 'case champ' }, h('input', { type: 'checkbox', checked: absente, 'data-act': 'absente', 'data-v': c }),
       ' Aucun produit de cette catégorie dans le magasin'));
     if (absente) return h('section', {}, blocs);
+    blocs.push(h('ol', { class: 'pas-categorie' },
+      h('li', {}, 'Photos du rayon'),
+      h('li', {}, 'Prix et facing de chaque produit présent ; « Absent » s\'il n\'est plus en rayon'),
+      h('li', {}, 'Ajout des produits présents qui manquent'),
+      h('li', {}, 'Facing total du rayon (en bas de l\'écran)')));
 
     // Photos du rayon principal (seul emplacement relevé depuis le 23/11/2026 ; les photos d'autres emplacements
     // prises auparavant restent affichées)
@@ -814,27 +839,8 @@ const Veille = (() => {
       blocs.push(h('div', { class: 'groupe' + (av ? ' a-verifier' : '') },
         h('div', { class: 'groupe-tete' }, h('span', { class: 'groupe-nom' }, marque)),
         h('div', { class: 'groupe-corps' }, parMarque[marque].map(id => ligneProduit(id, marque))),
-        av ? h('div', { class: 'verif' }, h('span', { class: 'verif-texte' }, `Repris du ${dateFr(f.prerempli.date)}`),
+        av ? h('div', { class: 'verif' }, h('span', { class: 'verif-texte' }, `Repris du ${dateFr(f.prerempli.date)} : prix et facings vérifiés ?`),
           h('button', { class: 'btn petit conforme', 'data-act': 'conforme', 'data-v': u }, '✓ Conforme')) : null));
-    }
-
-    // Facing total par segment : saisi à la main (tous les produits du rayon, y compris ceux qui ne sont pas relevés
-    // un par un) ; 0 si le segment n'existe pas dans le magasin. Il ne peut pas être inférieur aux facings des produits relevés.
-    const segs = Recensement.SEGMENTS.filter(s => s.cat === c);
-    if (segs.length) {
-      const sommes = totauxFacing(f, V.parId);
-      f.totaux = f.totaux || {};
-      blocs.push(h('div', { class: 'champ total' },
-        h('span', { class: 'champ-lib' }, 'Facing total du rayon', h('span', { class: 'req' }, ' *')),
-        h('small', { class: 'aide' }, 'Comptez toutes les unités de face du rayon pour chaque segment, y compris les produits non relevés. 0 si le segment est absent.'),
-        segs.map(s => {
-          const v = f.totaux[s.nom];
-          const manque = V.montrer && (vide(v) || Number(v) < (sommes[s.nom] || 0));
-          return h('label', { class: 'mini ligne-total' + (manque ? ' manque' : '') },
-            h('span', { class: 'mini-lib' }, s.nom),
-            h('input', { type: 'text', inputmode: 'numeric', value: v ?? '', 'data-total': s.nom, autocomplete: 'off' }),
-            h('small', { class: 'mini-info', 'data-somme': s.nom }, `produits relevés : ${sommes[s.nom] || 0}`));
-        })));
     }
 
     // Ajout d'un produit du catalogue
@@ -879,6 +885,25 @@ const Veille = (() => {
           h('div', { class: 'produit-tete' }, h('span', { class: 'produit-nom' }, x.description + (vide(x.prix) ? '' : ` · ${x.prix} F`)),
             h('button', { class: 'btn petit danger', 'data-act': 'suppr-inconnu', 'data-v': x.id }, 'Retirer')))))));
     }
+    // Facing total par segment : saisi à la main (tous les produits du rayon, y compris ceux qui ne sont pas relevés
+    // un par un) ; 0 si le segment n'existe pas dans le magasin. Il ne peut pas être inférieur aux facings des produits relevés.
+    const segs = Recensement.SEGMENTS.filter(s => s.cat === c);
+    if (segs.length) {
+      const sommes = totauxFacing(f, V.parId);
+      f.totaux = f.totaux || {};
+      blocs.push(h('div', { class: 'champ total' },
+        h('span', { class: 'champ-lib' }, 'Facing total du rayon', h('span', { class: 'req' }, ' *')),
+        h('small', { class: 'aide' }, 'À remplir en dernier. Pour chaque format, comptez toutes les unités de face du rayon, toutes marques confondues, y compris les produits non relevés ci-dessus. 0 si aucun produit de ce format.'),
+        segs.map(s => {
+          const v = f.totaux[s.nom];
+          const manque = V.montrer && (vide(v) || Number(v) < (sommes[s.nom] || 0));
+          return h('label', { class: 'mini ligne-total' + (manque ? ' manque' : '') },
+            h('span', { class: 'mini-lib' }, s.nom),
+            h('input', { type: 'text', inputmode: 'numeric', enterkeyhint: 'next', value: v ?? '', 'data-total': s.nom, autocomplete: 'off' }),
+            h('small', { class: 'mini-info', 'data-somme': s.nom }, `produits relevés : ${sommes[s.nom] || 0}`));
+        })));
+    }
+
     return h('section', {}, blocs);
   }
 
@@ -934,12 +959,12 @@ const Veille = (() => {
     const l = V.fiche.lignes[id], p = V.parId[id];
     const court = p.NOM_SYSTEME.startsWith(marque + ' ') ? p.NOM_SYSTEME.slice(marque.length + 1) : p.NOM_SYSTEME;
     const absent = l.present === false;
-    // Prix : obligatoire et > 0 ; facing rayon : obligatoire (0 admis si le produit n'est qu'en emplacement secondaire)
-    const manque = champ => champ === 'prix' ? !(Number(l.prix) > 0) : champ === 'facing' ? vide(l.facing) : false;
+    // Prix : obligatoire et > 0 ; facing rayon : obligatoire et au moins 1 (sinon le produit est absent)
+    const manque = champ => champ === 'prix' ? !(Number(l.prix) > 0) : champ === 'facing' ? !(Number(l.facing) > 0) : false;
     const hors = horsFourchette(id);
     const mini = (lib, champ, info) => h('label', { class: 'mini' + (V.montrer && manque(champ) ? ' manque' : '') + (champ === 'prix' && hors ? ' hors' : '') },
       h('span', { class: 'mini-lib' }, lib),
-      h('input', { type: 'text', inputmode: 'numeric', value: l[champ] ?? '', 'data-ref': id, 'data-champ': champ, autocomplete: 'off' }),
+      h('input', { type: 'text', inputmode: 'numeric', enterkeyhint: 'next', value: l[champ] ?? '', 'data-ref': id, 'data-champ': champ, autocomplete: 'off' }),
       champ === 'prix'
         ? h('small', { class: 'mini-info', 'data-info': info || '' }, hors ? texteFourchette(hors) : info || '')
         : info ? h('small', { class: 'mini-info' }, info) : null);
