@@ -4,7 +4,11 @@
 'use strict';
 
 const Recensement = (() => {
-  const CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS 100%', 'JUS NECTAR', 'JUS BOISSON AUX FRUITS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE'];
+  // Catégories retirées de l'application pour l'instant (décision du 23/11/2026) : remettre la liste vide pour les réactiver.
+  // Leurs références restent dans le catalogue ; elles ne sont plus relevées, ni proposées au recensement.
+  const SUSPENDUES = ['BOISSON GAZEUSE'];
+  const CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS 100%', 'JUS NECTAR', 'JUS BOISSON AUX FRUITS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE']
+    .filter(c => !SUSPENDUES.includes(c));
   const EMBALLAGES = ['PET', 'VERRE', 'CANETTE', 'BRIQUE', 'BRIQUETTE', 'BERLINGOT', 'SACHET', 'BONBONNE'];
   const LOTS = [1, 4, 6, 12, 24];
   const FORM = 'recensement';
@@ -12,7 +16,8 @@ const Recensement = (() => {
 
   // Jus : la catégorie se déduit de la teneur en fruits lue sur la liste des ingrédients.
   const JUS = ['JUS 100%', 'JUS NECTAR', 'JUS BOISSON AUX FRUITS'];
-  const CHOIX_CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE'];
+  const CHOIX_CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE']
+    .filter(c => !SUSPENDUES.includes(c));
   const A_CLASSER = 'JUS A CLASSER';
   const estJus = c => c === 'JUS' || c === A_CLASSER || JUS.includes(c);
   function categorieJus(teneur) {
@@ -541,7 +546,7 @@ const Recensement = (() => {
     if (ev.state && ev.state.vue === 'recensement' && etat) setTimeout(() => ecranRecherche(), 0);
   });
 
-  return { carte, nbAEnvoyer, envoyer, telechargerCatalogue, importerCatalogue, catalogue, nomSysteme, formatNormalise, etatPhoto, decisions,
+  return { SUSPENDUES, carte, nbAEnvoyer, envoyer, telechargerCatalogue, importerCatalogue, catalogue, nomSysteme, formatNormalise, etatPhoto, decisions,
     segmentFacing, SEGMENTS: SEGMENTS.map(s => ({ cat: s.cat, nom: s.nom })), miniatures, telechargerMiniatures, enregistrerMiniature,
     dateMajCatalogue, boutonActualiser };
 })();

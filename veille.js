@@ -7,7 +7,10 @@
 const Veille = (() => {
   const FORM = 'veille-gms';
   const TITRE = 'Veille GMS';
-  const CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS 100%', 'JUS NECTAR', 'JUS BOISSON AUX FRUITS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE'];
+  // Catégories suspendues (Recensement.SUSPENDUES, ex. BOISSON GAZEUSE depuis le 23/11/2026) : ni étape, ni reprise, ni envoi
+  const CATEGORIES = ['EAU PLATE', 'EAU GAZEUSE', 'JUS 100%', 'JUS NECTAR', 'JUS BOISSON AUX FRUITS', 'LAIT BLANC', 'LAIT AROMATISE', 'BOISSON GAZEUSE', 'BOISSON ENERGISANTE']
+    .filter(c => !Recensement.SUSPENDUES.includes(c));
+  const actif = p => CATEGORIES.includes(p.CATEGORIE);
   const ETAPES = ['IDENTIFICATION', ...CATEGORIES, 'EQUIPEMENTS'];
   const ETAPE_EQUIP = ETAPES.length - 1;
   // Équipements repris de l'ancien formulaire Kobo : photos avant / après réaménagement de chaque appareil
@@ -206,7 +209,7 @@ const Veille = (() => {
     // Brouillon rouvert : la position enregistrée (peut-être prise ailleurs ou il y a longtemps) est effacée et reprise sur place
     const brouillon = !nouvelleVisite && fiche.statut === 'brouillon';
     if (brouillon && fiche.valeurs.GPS) { fiche.valeurs.GPS = ''; await DB.mettre(fiche); }
-    const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('('));
+    const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('(') && actif(p));
     V = { fiche, cat, parId: Object.fromEntries(cat.map(p => [p.ID, p])), etape: 0, montrer: false, mini: await Recensement.miniatures() };
     if (fiche.ia) CATEGORIES.forEach(c => appliquerIA(fiche, c, V.parId));   // analyses arrivées visite fermée
     V.gpsAnciens = await positionsPrecedentes(fiche.id);
@@ -1254,7 +1257,7 @@ const Veille = (() => {
   }
 
   function lignesExport(f, cat) {
-    const parId = Object.fromEntries(cat.map(p => [p.ID, p]));
+    const parId = Object.fromEntries(cat.filter(actif).map(p => [p.ID, p]));
     const m = magasin(f.valeurs.MAGASIN) || { nom: '', chemin: [] };
     const [lat, lon, , acc] = String(f.valeurs.GPS || '').split(' ');
     const lignes = Object.entries(f.lignes).filter(([id]) => parId[id]);
@@ -1280,7 +1283,7 @@ const Veille = (() => {
     // Facing total par segment (base de la part de linéaire) : saisi à la main par l'agent ; 0 si la catégorie est absente
     for (const s of Recensement.SEGMENTS) {
       const v = (f.totaux || {})[s.nom];
-      visite['FACING_TOTAL ' + s.nom] = f.absentes[s.cat] ? 0 : vide(v) ? '' : Number(v);
+      visite['FACING_TOTAL ' + s.nom] = !CATEGORIES.includes(s.cat) ? '' : f.absentes[s.cat] ? 0 : vide(v) ? '' : Number(v);
     }
     // Analyse IA : ce que l'IA a proposé, à côté de ce que le merchandiser a validé (mesure de fiabilité, apprentissage du futur moteur)
     const avecIA = Object.values(f.ia || {}).some(a => a.statut === 'ok');
