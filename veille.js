@@ -866,9 +866,9 @@ const Veille = (() => {
       d.open = V.marquesOuvertes.has(`${c}|${m}`);
       d.addEventListener('toggle', () => { V.marquesOuvertes[d.open ? 'add' : 'delete'](`${c}|${m}`); });
       return d;
-    }) : h('p', { class: 'discret' }, 'Tous les produits de la liste Kobo de cette catégorie sont déjà dans la fiche.'));
+    }) : h('p', { class: 'discret' }, 'Tous les produits suivis de cette catégorie sont déjà dans la fiche.'));
     blocs.push(h('div', { class: 'champ' }, h('span', { class: 'champ-lib' }, 'Ajouter un produit présent en rayon'),
-      h('small', { class: 'aide' }, 'Choisissez dans la liste Kobo (par marque) ou recherchez dans tout le catalogue.'), recherche, res, listeKobo,
+      h('small', { class: 'aide' }, 'Choisissez dans la liste des produits suivis (par marque) ou recherchez dans tout le catalogue.'), recherche, res, listeKobo,
       h('button', { class: 'btn', 'data-act': 'inconnu', 'data-v': c }, '+ Produit absent du catalogue')));
 
     // Produits hors catalogue (à vérifier)
