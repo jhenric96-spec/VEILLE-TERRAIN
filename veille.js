@@ -23,8 +23,7 @@ const Veille = (() => {
   const empDe = (f, c, i) => ((f.emp || {})[c] || [])[i] || EMPLACEMENTS[0];
   // Seul le rayon principal entre dans le facing total ; les autres emplacements sont des emplacements secondaires.
   const EMPLACEMENT_PRINCIPAL = EMPLACEMENTS[0];
-  const aSecondaire = (f, c) => ((f.emp || {})[c] || []).some(e => e !== EMPLACEMENT_PRINCIPAL) || ((V && V.empOuverts && V.empOuverts[c]) || []).length > 0;
-
+  
   /* Magasins et merchandisers : onglets « Magasins » et « Merchandisers » de la Google Sheet (référentiels),
      à défaut les listes de l'ancien formulaire Kobo. Les codes magasin restent ceux de Kobo (CANAL/ENSEIGNE/MAGASIN),
      ce qui garde le lien avec l'historique. */
@@ -107,10 +106,15 @@ const Veille = (() => {
 
   /* ---------- Historique : dernière visite du magasin ---------- */
 
+  // Facing repris : nombre entier >= 0, sinon vide (à saisir)
+  const facingValide = x => (vide(x) || !(Number(x) >= 0) ? '' : Math.round(Number(x)));
+
   function depuisKobo(valeurs, cat) {
     const lignes = {};
     for (const p of cat) {
-      if (p.KOBO_PRESENCE && valeurs[p.KOBO_PRESENCE] === 'oui') lignes[p.ID] = { prix: prixValide(valeurs[p.KOBO_PRIX]) };
+      if (p.KOBO_PRESENCE && valeurs[p.KOBO_PRESENCE] === 'oui') {
+        lignes[p.ID] = { prix: prixValide(valeurs[p.KOBO_PRIX]), facing: p.KOBO_FACING ? facingValide(valeurs[p.KOBO_FACING]) : '' };
+      }
     }
     return lignes;
   }
@@ -120,7 +124,7 @@ const Veille = (() => {
     for (const f of await DB.tout()) {
       if (f.form !== FORM || f.id === exclureId || f.statut === 'brouillon' || f.valeurs.MAGASIN !== cleMag) continue;
       const lignes = {};
-      for (const id in f.lignes) if (f.lignes[id].present === true) lignes[id] = { prix: f.lignes[id].prix };
+      for (const id in f.lignes) if (f.lignes[id].present === true) lignes[id] = { prix: f.lignes[id].prix, facing: f.lignes[id].facing };
       cands.push({ date: f.valeurs.DATE, source: 'appareil', par: nomMerch(f.valeurs.MERCH), lignes });
     }
     const s = await DB.histLire(`${FORM}|${cleMag}`);
@@ -188,7 +192,7 @@ const Veille = (() => {
     const fiche = {
       id: uuid(), form: FORM, statut: 'brouillon', creeLe: maintenant(), modifieLe: maintenant(), appareil: idAppareil(),
       valeurs: { DATE: aujourdhui(), MERCH: memo.MERCH || '', MAGASIN: '', GPS: '', DEBUT: maintenant() },
-      lignes: {}, confirme: {}, photos: {}, liens: {}, emp: {}, absentes: {}, inconnus: [], prerempli: null,
+      lignes: {}, confirme: {}, photos: {}, liens: {}, emp: {}, absentes: {}, inconnus: [], prerempli: null, totaux: {},
       equip: { frigos: '', canCoolers: '', photos: {}, liens: {} },
     };
     await DB.mettre(fiche);
@@ -563,6 +567,13 @@ const Veille = (() => {
         if (!(Number(l.prix) > 0)) pb[i + 1].push(`prix ${p.NOM_SYSTEME}`);
         if (modeFacing() === 'saisie' && vide(l.facing)) pb[i + 1].push(`facing ${p.NOM_SYSTEME}`);
       }
+      // Facing total du rayon : saisi pour chaque segment, et au moins égal aux facings des produits relevés
+      const sommes = totauxFacing(f, V.parId);
+      for (const s of Recensement.SEGMENTS.filter(x => x.cat === c)) {
+        const v = (f.totaux || {})[s.nom];
+        if (vide(v)) pb[i + 1].push(`facing total ${s.nom}`);
+        else if (Number(v) < (sommes[s.nom] || 0)) pb[i + 1].push(`facing total ${s.nom} inférieur aux produits relevés (${sommes[s.nom]})`);
+      }
       aVerif.forEach(u => { if (u.startsWith(c + '|')) pb[i + 1].push('marque ' + u.split('|')[1] + ' à vérifier'); });
     });
     // Équipements : nombre obligatoire (0 compris), puis photo avant et après pour chaque appareil
@@ -731,7 +742,8 @@ const Veille = (() => {
       for (const id in d.lignes) {
         if (!V.parId[id]) continue;
         const prix = prixValide(d.lignes[id].prix);
-        f.lignes[id] = { present: true, prix, facing: '', repris: { prix } };
+        const facing = facingValide(d.lignes[id].facing);   // facing rayon de la dernière visite, à corriger s'il a changé
+        f.lignes[id] = { present: true, prix, facing, repris: { prix, facing } };
         nb++;
       }
       f.prerempli = { date: d.date, par: d.par, source: d.source, nb };
@@ -753,18 +765,16 @@ const Veille = (() => {
       ' Aucun produit de cette catégorie dans le magasin'));
     if (absente) return h('section', {}, blocs);
 
-    // Photos, par emplacement (rayon principal, frigo, devanture caisse…)
+    // Photos du rayon principal (seul emplacement relevé depuis le 23/11/2026 ; les photos d'autres emplacements
+    // prises auparavant restent affichées)
     const photos = (f.photos[c] || []).map((data, i) => ({ src: data, i, emp: empDe(f, c, i) }));
     const envoyees = (f.photos[c] || []).length ? 0 : (f.liens[c] || []).filter(Boolean).length;
-    V.empOuverts = V.empOuverts || {};
-    const ouverts = new Set([EMPLACEMENTS[0], ...photos.map(p => p.emp), ...(V.empOuverts[c] || [])]);
+    const ouverts = new Set([EMPLACEMENT_PRINCIPAL, ...photos.map(p => p.emp)]);
     blocs.push(h('div', { class: 'champ' + (V.montrer && !photosDe(c) ? ' manque' : '') },
       h('span', { class: 'champ-lib' }, 'Photos', h('span', { class: 'req' }, ' *')),
-      h('small', { class: 'aide' }, 'Photographiez chaque endroit où la catégorie est exposée : une photo par module, de face, en entier, '
-        + 'porte du frigo ouverte, sans reflet. Ne photographiez pas deux fois le même module. '
-        + 'RAYON PRINCIPAL = emplacement principal de la catégorie (en station-service, souvent le frigo boissons) : '
-        + 'seul lui compte dans le facing total ; les autres emplacements sont suivis à part.'
-        + (modeFacing() === 'photo' ? ' Les facings seront comptés sur ces photos.' : '')),
+      h('small', { class: 'aide' }, 'Photographiez le rayon principal de la catégorie (en station-service, souvent le frigo boissons) : '
+        + 'une photo par module, de face, en entier, porte du frigo ouverte, sans reflet. Ne photographiez pas deux fois le même module. '
+        + 'Une palette au pied du rayon fait partie du rayon ; une palette isolée dans une allée ne se relève pas.'),
       h('details', { class: 'consignes' }, h('summary', {}, 'Rayon trop grand pour une seule photo ?'),
         h('ul', {},
           h('li', {}, 'Utilisez la prise guidée : une photo par module, de gauche à droite. Pour le module suivant, faites coïncider '
@@ -788,9 +798,6 @@ const Veille = (() => {
             h('label', { class: 'btn' + (cameraDispo() ? ' petit' : '') }, cameraDispo() ? 'Appareil photo du téléphone' : '📷 Ajouter une photo',
               h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'masque', 'data-photo': c, 'data-emp': e }))));
       }),
-      EMPLACEMENTS.some(e => !ouverts.has(e)) ? h('div', {}, h('small', { class: 'discret' }, 'Produits exposés ailleurs dans le magasin ?'),
-        h('div', { class: 'puces' }, EMPLACEMENTS.filter(e => !ouverts.has(e)).map(e =>
-          h('button', { type: 'button', 'data-act': 'emplacement', 'data-v': c, 'data-e': e }, '+ ' + e)))) : null,
       envoyees ? h('small', { class: 'discret' }, `${envoyees} photo(s) déjà envoyée(s)`) : null));
     blocs.push(blocIA(c));
 
@@ -811,12 +818,23 @@ const Veille = (() => {
           h('button', { class: 'btn petit conforme', 'data-act': 'conforme', 'data-v': u }, '✓ Conforme')) : null));
     }
 
-    // Facing total par segment (affiché quand les facings sont saisis)
+    // Facing total par segment : saisi à la main (tous les produits du rayon, y compris ceux qui ne sont pas relevés
+    // un par un) ; 0 si le segment n'existe pas dans le magasin. Il ne peut pas être inférieur aux facings des produits relevés.
     const segs = Recensement.SEGMENTS.filter(s => s.cat === c);
-    if (modeFacing() === 'saisie' && ids.length) {
-      const totaux = totauxFacing(f, V.parId);
-      blocs.push(h('div', { class: 'champ total' }, h('span', { class: 'champ-lib' }, 'Facing total'),
-        segs.map(s => h('div', { class: 'ligne-total' }, h('span', {}, s.nom), h('strong', { 'data-total': s.nom }, String(totaux[s.nom] || 0))))));
+    if (segs.length) {
+      const sommes = totauxFacing(f, V.parId);
+      f.totaux = f.totaux || {};
+      blocs.push(h('div', { class: 'champ total' },
+        h('span', { class: 'champ-lib' }, 'Facing total du rayon', h('span', { class: 'req' }, ' *')),
+        h('small', { class: 'aide' }, 'Comptez toutes les unités de face du rayon pour chaque segment, y compris les produits non relevés. 0 si le segment est absent.'),
+        segs.map(s => {
+          const v = f.totaux[s.nom];
+          const manque = V.montrer && (vide(v) || Number(v) < (sommes[s.nom] || 0));
+          return h('label', { class: 'mini ligne-total' + (manque ? ' manque' : '') },
+            h('span', { class: 'mini-lib' }, s.nom),
+            h('input', { type: 'text', inputmode: 'numeric', value: v ?? '', 'data-total': s.nom, autocomplete: 'off' }),
+            h('small', { class: 'mini-info', 'data-somme': s.nom }, `produits relevés : ${sommes[s.nom] || 0}`));
+        })));
     }
 
     // Ajout d'un produit du catalogue
@@ -921,8 +939,7 @@ const Veille = (() => {
         h('button', { type: 'button', class: 'btn petit', 'data-act': 'ia-echanger', 'data-v': id }, `c'est ${doute.NOM_SYSTEME}`)) : null,
       absent ? null : h('div', { class: 'valeurs' },
         mini('Prix', 'prix', l.repris ? (vide(l.repris.prix) ? 'prix précédent inconnu' : `dernier : ${l.repris.prix} F`) : null),
-        modeFacing() === 'saisie' ? mini('Facing rayon', 'facing') : null,
-        modeFacing() === 'saisie' && aSecondaire(V.fiche, p.CATEGORIE) ? mini('Facing hors rayon', 'facingSec', 'non compté dans le total') : null));
+        mini('Facing rayon', 'facing', l.repris ? (vide(l.repris.facing) ? 'facing précédent inconnu' : `dernier : ${l.repris.facing}`) : null)));
   }
 
   /* ----- Événements ----- */
@@ -985,9 +1002,7 @@ const Veille = (() => {
       }
       case 'camera': cameraGuidee(v, b.dataset.e); return;
       case 'apercu': apercuProduit(v); return;
-      case 'emplacement':
-        V.empOuverts[v] = (V.empOuverts[v] || []).concat(b.dataset.e);
-        break;
+
       case 'equip-nb': {
         const n = Number(b.dataset.n), q = EQUIPEMENTS.find(x => x.cle === v);
         f.equip[v] = n;
@@ -1023,10 +1038,16 @@ const Veille = (() => {
         lab.classList.toggle('hors', !!hors);
         if (info) info.textContent = hors ? texteFourchette(hors) : info.dataset.info || '';
       }
-      if (t.dataset.champ === 'facing') {   // totaux (rayon principal) mis à jour sans redessiner : le curseur reste dans le champ
-        const totaux = totauxFacing(V.fiche, V.parId);
-        V.corps.querySelectorAll('[data-total]').forEach(el => { el.textContent = String(totaux[el.dataset.total] || 0); });
+      if (t.dataset.champ === 'facing') {   // somme des produits relevés mise à jour sans redessiner : le curseur reste dans le champ
+        const sommes = totauxFacing(V.fiche, V.parId);
+        V.corps.querySelectorAll('[data-somme]').forEach(el => { el.textContent = `produits relevés : ${sommes[el.dataset.somme] || 0}`; });
       }
+    } else if (t.dataset.total) {           // facing total du rayon, saisi à la main par segment
+      const val = t.value.replace(/\D/g, '');
+      if (val !== t.value) t.value = val;
+      (V.fiche.totaux = V.fiche.totaux || {})[t.dataset.total] = val === '' ? '' : Number(val);
+      sauver();
+      majNav();
     } else if (t.dataset.champ === 'DATE') { V.fiche.valeurs.DATE = t.value; sauver(); }
   }
 
@@ -1212,9 +1233,11 @@ const Veille = (() => {
       ALERTE_GPS: ecartGps(f) === null ? '' : ecartGps(f) > SEUIL_GPS_M ? 'OUI' : 'NON',
       NB_PRIX_HORS_FOURCHETTE: lignes.filter(([id, l]) => !f.absentes[parId[id].CATEGORIE] && horsFourchette(id, l, parId[id])).length,
     };
-    // Facing total par segment (base de la part de linéaire) ; vide tant que les facings viennent des photos
-    const totaux = totauxFacing(f, parId);
-    for (const s of Recensement.SEGMENTS) visite['FACING_TOTAL ' + s.nom] = modeFacing() === 'saisie' ? (totaux[s.nom] || 0) : '';
+    // Facing total par segment (base de la part de linéaire) : saisi à la main par l'agent ; 0 si la catégorie est absente
+    for (const s of Recensement.SEGMENTS) {
+      const v = (f.totaux || {})[s.nom];
+      visite['FACING_TOTAL ' + s.nom] = f.absentes[s.cat] ? 0 : vide(v) ? '' : Number(v);
+    }
     // Analyse IA : ce que l'IA a proposé, à côté de ce que le merchandiser a validé (mesure de fiabilité, apprentissage du futur moteur)
     const avecIA = Object.values(f.ia || {}).some(a => a.statut === 'ok');
     const iaParCat = {};
@@ -1236,9 +1259,9 @@ const Veille = (() => {
         PRESENT: l.present === true ? 'OUI' : 'NON', PRIX: l.present === true ? l.prix : '',
         PRIX_REPRIS: l.present !== true ? '' : l.repris ? (String(l.prix) === String(l.repris.prix) ? 'INCHANGE' : 'MODIFIE') : 'NOUVEAU',
         PRIX_ALERTE: hors ? `HORS FOURCHETTE ${hors.min}-${hors.max}` : '',
-        // FACING = rayon principal, seul compté dans le facing total ; FACING_SECONDAIRE = autres emplacements
-        FACING: l.present === true && modeFacing() === 'saisie' ? l.facing : '',
-        FACING_SECONDAIRE: l.present === true && modeFacing() === 'saisie' ? (Number(l.facingSec) || 0) : '',
+        // FACING = facing rayon saisi par l'agent ; FACING_REPRIS = comparaison avec la dernière visite (préremplissage)
+        FACING: l.present === true ? l.facing : '',
+        FACING_REPRIS: l.present !== true ? '' : l.repris && !vide(l.repris.facing) ? (String(l.facing) === String(l.repris.facing) ? 'INCHANGE' : 'MODIFIE') : 'NOUVEAU',
       }, ia);
     });
     return { visite, releves };
