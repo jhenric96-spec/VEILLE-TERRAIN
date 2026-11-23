@@ -339,3 +339,7 @@ label.case.champ { flex-direction: row; }
 .bandeau-ios { display: grid; gap: 6px; border-left: 4px solid var(--avert); }
 .bandeau-ios p { margin: 0; }
 .bandeau-ios ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.liste-kobo { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.marque-kobo { background: var(--surface); border: 1px solid var(--bord); border-radius: var(--rayon); padding: 0 10px; }
+.marque-kobo summary { cursor: pointer; font-weight: 600; padding: 10px 0; }
+.marque-kobo[open] { padding-bottom: 8px; }

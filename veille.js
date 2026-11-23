@@ -848,8 +848,27 @@ const Veille = (() => {
         (V.mini || {})[p.ID] ? h('img', { class: 'mini-photo', src: V.mini[p.ID].data, alt: '' }) : h('span', { class: 'mini-photo vide' }, '📷'),
         h('span', {}, h('strong', {}, p.NOM_SYSTEME), h('small', {}, p.ID)))),
       trouves.length ? '' : h('p', { class: 'discret' }, 'Introuvable dans le catalogue : utilisez « Produit absent du catalogue ».'));
+      listeKobo.hidden = true;
     });
-    blocs.push(h('div', { class: 'champ' }, h('span', { class: 'champ-lib' }, 'Ajouter un produit présent en rayon'), recherche, res,
+    recherche.addEventListener('search', () => { if (!recherche.value) { res.replaceChildren(); listeKobo.hidden = false; } });
+    recherche.addEventListener('input', () => { if (!recherche.value.trim()) listeKobo.hidden = false; });
+    // Liste des produits de l'ancien formulaire Kobo (demande du 23/11/2026), par marque : un appui ajoute le produit
+    const kobo = V.cat.filter(p => p.CATEGORIE === c && p.KOBO_PRESENCE && !f.lignes[p.ID])
+      .sort((a, b) => a.MARQUE.localeCompare(b.MARQUE) || a.NOM_SYSTEME.localeCompare(b.NOM_SYSTEME));
+    const koboMarques = {};
+    kobo.forEach(p => { (koboMarques[p.MARQUE] = koboMarques[p.MARQUE] || []).push(p); });
+    V.marquesOuvertes = V.marquesOuvertes || new Set();
+    const listeKobo = h('div', { class: 'liste-kobo' }, kobo.length ? Object.keys(koboMarques).map(m => {
+      const d = h('details', { class: 'marque-kobo' }, h('summary', {}, `${m} (${koboMarques[m].length})`),
+        h('div', { class: 'casc-liste' }, koboMarques[m].map(p => h('button', { type: 'button', class: 'casc-option avec-photo', 'data-act': 'ajouter', 'data-v': p.ID },
+          (V.mini || {})[p.ID] ? h('img', { class: 'mini-photo', src: V.mini[p.ID].data, alt: '' }) : h('span', { class: 'mini-photo vide' }, '📷'),
+          h('span', {}, h('strong', {}, p.NOM_SYSTEME), h('small', {}, p.ID))))));
+      d.open = V.marquesOuvertes.has(`${c}|${m}`);
+      d.addEventListener('toggle', () => { V.marquesOuvertes[d.open ? 'add' : 'delete'](`${c}|${m}`); });
+      return d;
+    }) : h('p', { class: 'discret' }, 'Tous les produits de la liste Kobo de cette catégorie sont déjà dans la fiche.'));
+    blocs.push(h('div', { class: 'champ' }, h('span', { class: 'champ-lib' }, 'Ajouter un produit présent en rayon'),
+      h('small', { class: 'aide' }, 'Choisissez dans la liste Kobo (par marque) ou recherchez dans tout le catalogue.'), recherche, res, listeKobo,
       h('button', { class: 'btn', 'data-act': 'inconnu', 'data-v': c }, '+ Produit absent du catalogue')));
 
     // Produits hors catalogue (à vérifier)
