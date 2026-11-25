@@ -208,7 +208,7 @@ const Veille = (() => {
     fiche.equip = fiche.equip || { frigos: '', canCoolers: '', photos: {}, liens: {} };   // visites créées avant l'étape Équipements
     // Brouillon rouvert : la position enregistrée (peut-être prise ailleurs ou il y a longtemps) est effacée et reprise sur place
     const brouillon = !nouvelleVisite && fiche.statut === 'brouillon';
-    if (brouillon && fiche.valeurs.GPS) { fiche.valeurs.GPS = ''; await DB.mettre(fiche); }
+    if (brouillon && fiche.valeurs.GPS) { fiche.valeurs.GPS = ''; delete fiche.lieu; await DB.mettre(fiche); }
     const cat = (await Recensement.catalogue()).filter(p => p.STATUT !== 'EXCLU' && p.ID && !String(p.ID).startsWith('(') && actif(p));
     V = { fiche, cat, parId: Object.fromEntries(cat.map(p => [p.ID, p])), etape: 0, montrer: false, mini: await Recensement.miniatures() };
     if (fiche.ia) CATEGORIES.forEach(c => appliquerIA(fiche, c, V.parId));   // analyses arrivées visite fermée
@@ -676,19 +676,9 @@ const Veille = (() => {
     const m = magasin(v.MAGASIN);
     const blocs = [h('h2', { class: 'section-tete' }, 'IDENTIFICATION')];
 
-    const [lat, lon, , acc] = String(v.GPS || '').split(' ').map(Number);
-    blocs.push(h('div', { class: 'champ' + (V.montrer && !v.GPS ? ' manque' : '') },
-      h('span', { class: 'champ-lib' }, 'Localisation PDV', h('span', { class: 'req' }, ' *')),
-      V.gpsMsg ? h('div', { class: 'discret' }, V.gpsMsg) : null,
-      v.GPS ? h('div', {}, h('strong', {}, `${lat.toFixed(6)}, ${lon.toFixed(6)}`), ` · précision ±${Math.round(acc)} m`) : h('div', { class: 'discret' }, 'Aucune position.'),
-      v.GPS && acc > 50 ? h('div', { class: 'avert' }, 'Précision faible : sortez du bâtiment ou réessayez.') : null,
-      (() => {
-        const dist = ecartGps(f);
-        if (dist === null || dist <= SEUIL_GPS_M) return null;
-        return h('div', { class: 'avert' }, `⚠ Position à ${dist >= 1000 ? (dist / 1000).toFixed(1).replace('.', ',') + ' km' : dist + ' m'} du magasin `
-          + `${m.nom}. Vérifiez que vous êtes dans le bon magasin, ou recapturez la position une fois sur place.`);
-      })(),
-      h('button', { class: 'btn', 'data-act': 'gps' }, 'Capturer la position')));
+    blocs.push(blocGps());
+    // Position déjà connue mais lieu manquant (réseau revenu, brouillon rouvert…) : redemandé
+    if (v.GPS && !(f.lieu && f.lieu.position === v.GPS) && !V.lieuEnCours && !V.gpsMsg) setTimeout(chercherLieu, 0);
 
     blocs.push(h('div', { class: 'champ' }, h('span', { class: 'champ-lib' }, 'Date', h('span', { class: 'req' }, ' *')),
       h('input', { type: 'date', value: v.DATE, 'data-champ': 'DATE' })));
@@ -721,6 +711,56 @@ const Veille = (() => {
       blocs.push(h('div', { class: 'bandeau-repris' }, 'Pas de visite récente connue pour ce magasin : ajoutez les produits présents dans chaque catégorie.'));
     }
     return h('section', {}, blocs);
+  }
+
+  // Position (capturée automatiquement à l'ouverture de la visite) et lieu calculé par le serveur, comme l'application AFFICHAGE.
+  // Mis à jour seul (majGps) : la recherche du magasin en cours de frappe n'est pas effacée.
+  function blocGps() {
+    const f = V.fiche, v = f.valeurs, m = magasin(v.MAGASIN);
+    const [lat, lon, , acc] = String(v.GPS || '').split(' ').map(Number);
+    const l = f.lieu;
+    const ligneLieu = (lib, val) => h('div', { class: 'lieu-ligne' }, h('span', { class: 'discret' }, lib), h('strong', {}, val || '—'));
+    return h('div', { class: 'champ' + (V.montrer && !v.GPS ? ' manque' : ''), id: 'bloc-gps' },
+      h('span', { class: 'champ-lib' }, 'Localisation PDV', h('span', { class: 'req' }, ' *')),
+      V.gpsMsg ? h('p', { class: 'attente' }, h('span', { class: 'roue' }), V.gpsMsg) : null,
+      v.GPS ? h('div', { class: acc > 50 ? 'avert' : 'ok' }, acc > 50 ? '⚠ Position peu précise' : '✓ Position enregistrée', ` (±${Math.round(acc)} m)`)
+        : V.gpsMsg ? null : h('div', { class: 'discret' }, 'Aucune position.'),
+      v.GPS && acc > 50 && !V.gpsMsg ? h('small', { class: 'discret' }, 'Éloignez-vous des murs et des toits, puis touchez « Reprendre la position ».') : null,
+      (() => {
+        const dist = ecartGps(f);
+        if (dist === null || dist <= SEUIL_GPS_M) return null;
+        return h('div', { class: 'avert' }, `⚠ Position à ${dist >= 1000 ? (dist / 1000).toFixed(1).replace('.', ',') + ' km' : dist + ' m'} du magasin `
+          + `${m.nom}. Vérifiez que vous êtes dans le bon magasin, ou reprenez la position une fois sur place.`);
+      })(),
+      v.GPS ? h('div', { class: 'lieu' },
+        l && l.position === v.GPS
+          ? [ligneLieu('Département', l.departement), ligneLieu('Commune', l.commune), ligneLieu('Quartier', l.quartier), ligneLieu('Adresse', l.adresse)]
+          : h('small', { class: 'discret' }, V.lieuEnCours ? 'Recherche du département, de la commune, du quartier et de l\'adresse…'
+            : 'Département, commune, quartier et adresse : complétés automatiquement à l\'envoi de la visite.'),
+        h('small', { class: 'discret' }, `${lat.toFixed(6)}, ${lon.toFixed(6)}`)) : null,
+      V.gpsMsg ? null : h('button', { class: 'btn', 'data-act': 'gps' }, '📍 Reprendre la position'));
+  }
+  function majGps() {
+    if (!V || V.etape !== 0) { if (V) majNav(); return; }
+    const b = document.getElementById('bloc-gps');
+    if (b) b.replaceWith(blocGps());
+    majNav();
+  }
+
+  // Lieu demandé au serveur dès que la position est connue (si réseau) ; sinon le serveur le complète à la réception de la visite
+  async function chercherLieu() {
+    const f = V.fiche, gps = f.valeurs.GPS, r = Reglages.lire();
+    if (!gps || !r.url || !navigator.onLine || (f.lieu && f.lieu.position === gps)) return;
+    const [lat, lon] = gps.split(' ').map(Number);
+    V.lieuEnCours = true; majGps();
+    try {
+      const j = await appelServeur(r.url, { action: 'localiser', jeton: r.jeton, lat, lon }, 30000);
+      if (j && j.ok && V && V.fiche === f && f.valeurs.GPS === gps && (j.departement || j.commune || j.quartier || j.adresse)) {
+        f.lieu = { position: gps, departement: j.departement || '', commune: j.commune || '', quartier: j.quartier || '', adresse: j.adresse || '' };
+        sauver();
+      }
+    } catch (e) { /* hors ligne ou serveur ancien : complété à l'envoi */ }
+    if (V && V.fiche === f) { V.lieuEnCours = false; majGps(); }
   }
 
   /* ---------- Fourchettes de prix ----------
@@ -1171,23 +1211,24 @@ const Veille = (() => {
     const debut = Date.now();
     let meilleur = null;
     V.gpsMsg = 'Recherche de la position…';
-    if (V.etape === 0) rendre();
+    majGps();
     const fin = msg => {
       navigator.geolocation.clearWatch(id); clearTimeout(limite);
       if (!V || V.fiche !== fiche) return;
       V.gpsMsg = '';
       if (meilleur) { fiche.valeurs.GPS = meilleur; sauver(); } else toast(msg || 'Position introuvable');
-      if (V.etape === 0) rendre(); else majNav();
+      majGps();
+      if (meilleur) chercherLieu();
     };
     const id = navigator.geolocation.watchPosition(p => {
       const c = p.coords;
       // Position en cache (relevée avant cette capture) ou identique à une visite précédente : ignorée, on attend la position actuelle
       if ((p.timestamp && p.timestamp < debut - 5000) || (V && V.gpsAnciens && V.gpsAnciens.has(cleGps(c.latitude, c.longitude)))) {
-        if (V && V.fiche === fiche) { V.gpsMsg = 'Recherche de la position actuelle…'; if (V.etape === 0) rendre(); }
+        if (V && V.fiche === fiche) { V.gpsMsg = 'Recherche de la position actuelle…'; majGps(); }
         return;
       }
       if (!meilleur || c.accuracy < Number(meilleur.split(' ')[3])) meilleur = `${c.latitude} ${c.longitude} ${c.altitude || 0} ${c.accuracy}`;
-      if (V && V.fiche === fiche) { V.gpsMsg = `Affinage… ±${Math.round(c.accuracy)} m`; if (V.etape === 0) rendre(); }
+      if (V && V.fiche === fiche) { V.gpsMsg = `Affinage… ±${Math.round(c.accuracy)} m`; majGps(); }
       if (c.accuracy <= 15) fin();
     }, err => fin(err.code === 1 ? 'Autorisez l\'accès à la position dans le navigateur' : 'Position introuvable : réessayez à l\'extérieur'),
     { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
@@ -1260,6 +1301,7 @@ const Veille = (() => {
     const parId = Object.fromEntries(cat.filter(actif).map(p => [p.ID, p]));
     const m = magasin(f.valeurs.MAGASIN) || { nom: '', chemin: [] };
     const [lat, lon, , acc] = String(f.valeurs.GPS || '').split(' ');
+    const lieu = f.lieu && f.lieu.position === f.valeurs.GPS ? f.lieu : {};   // vide : complété par le serveur à la réception
     const lignes = Object.entries(f.lignes).filter(([id]) => parId[id]);
     const repris = lignes.filter(([, l]) => l.repris && l.present === true);
     const inchanges = repris.filter(([, l]) => String(l.prix) === String(l.repris.prix));
@@ -1267,6 +1309,7 @@ const Veille = (() => {
       _id: f.id, DATE: f.valeurs.DATE, SOUMIS_LE: f.finaliseLe || '', APPAREIL: f.appareil || '', MERCHANDISEUR: nomMerch(f.valeurs.MERCH),
       CANAL: m.chemin[0] || '', ENSEIGNE: m.chemin[1] || '', MAGASIN: m.nom, MAGASIN_CODE: f.valeurs.MAGASIN,
       LATITUDE: Number(lat) || '', LONGITUDE: Number(lon) || '', PRECISION_GPS: Number(acc) || '',
+      DEPARTEMENT: lieu.departement || '', COMMUNE: lieu.commune || '', QUARTIER: lieu.quartier || '', ADRESSE: lieu.adresse || '',
       NB_REFS_PRESENTES: lignes.filter(([, l]) => l.present === true).length, NB_HORS_CATALOGUE: f.inconnus.length,
       CATEGORIES_ABSENTES: CATEGORIES.filter(c => f.absentes[c]).join(', '),
       NB_FRIGOS: f.equip ? f.equip.frigos : '', NB_CAN_COOLERS: f.equip ? f.equip.canCoolers : '',
