@@ -186,6 +186,17 @@ hr { border: 0; border-top: 1px solid var(--bord); margin: 20px 0; }
 .mini-info { font-size: .72rem; color: var(--discret); }
 .groupe-corps > .valeurs .mini { max-width: none; }
 
+/* Autres produits d'une marque reprise : présence à confirmer */
+.gamme { border-top: 1px dashed var(--bord); background: var(--fond); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.gamme.manque { box-shadow: inset 3px 0 0 var(--non); }
+.gamme-tete { display: flex; flex-direction: column; gap: 2px; }
+.gamme-ligne { display: flex; align-items: center; gap: 8px; }
+.gamme-ligne .produit-nom { flex: 1; }
+.gamme-ligne.repondu .produit-nom { color: var(--discret); text-decoration: line-through; }
+.gamme-ligne .choix { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.gamme-ligne .btn.actif { background: var(--non-fond); color: var(--non); border-color: var(--non); font-weight: 700; }
+.gamme > .btn { align-self: flex-start; }
+
 /* États de contrôle */
 .hors input { border-color: var(--avert); background: var(--avert-fond); }
 .hors .mini-info { color: var(--avert); font-weight: 600; }

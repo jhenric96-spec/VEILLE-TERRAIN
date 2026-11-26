@@ -241,6 +241,21 @@ const Veille = (() => {
     return res;
   }
 
+  // Produit de la gamme confirmé absent par l'agent (n'était pas à la dernière visite) : exporté « PRESENT NON »
+  const absentConfirme = l => !!(l && l.verifie && !l.repris && l.present === false);
+
+  // Pour chaque marque reprise de la dernière visite : ses autres produits du catalogue non relevés,
+  // encore sans réponse ou confirmés absents. { marque: [ids] }
+  function gammesAConfirmer(c) {
+    const f = V.fiche, marques = new Set(), res = {};
+    for (const id in f.lignes) { const p = V.parId[id]; if (p && p.CATEGORIE === c && f.lignes[id].repris) marques.add(p.MARQUE); }
+    if (!marques.size) return res;
+    V.cat.filter(p => p.CATEGORIE === c && marques.has(p.MARQUE) && (!f.lignes[p.ID] || absentConfirme(f.lignes[p.ID])))
+      .sort((a, b) => a.NOM_SYSTEME.localeCompare(b.NOM_SYSTEME))
+      .forEach(p => { (res[p.MARQUE] = res[p.MARQUE] || []).push(p.ID); });
+    return res;
+  }
+
   const photoEquip = (f, cle) => !!(f.equip.photos[cle] || f.equip.liens[cle]);
 
   /* ---------- Éviter de compter un produit deux fois ----------
@@ -580,6 +595,11 @@ const Veille = (() => {
         else if (Number(v) < (sommes[s.nom] || 0)) pb[i + 1].push(`facing total ${s.nom} inférieur aux produits relevés (${sommes[s.nom]})`);
       }
       aVerif.forEach(u => { if (u.startsWith(c + '|')) pb[i + 1].push('marque ' + u.split('|')[1] + ' à vérifier'); });
+      const gammes = gammesAConfirmer(c);
+      for (const m in gammes) {
+        const n = gammes[m].filter(id => !f.lignes[id]).length;
+        if (n) pb[i + 1].push(`${m} : ${n} autre(s) produit(s) à confirmer (présent ou absent)`);
+      }
     });
     // Équipements : nombre obligatoire (0 compris), puis photo avant et après pour chaque appareil
     for (const q of EQUIPEMENTS) {
@@ -869,8 +889,9 @@ const Veille = (() => {
       envoyees ? h('small', { class: 'discret' }, `${envoyees} photo(s) déjà envoyée(s)`) : null));
     blocs.push(blocIA(c));
 
-    // Produits relevés, groupés par marque
-    const ids = Object.keys(f.lignes).filter(id => V.parId[id] && V.parId[id].CATEGORIE === c)
+    // Produits relevés, groupés par marque (les produits confirmés absents de la gamme sont affichés à part, plus bas)
+    const confirmer = gammesAConfirmer(c);
+    const ids = Object.keys(f.lignes).filter(id => V.parId[id] && V.parId[id].CATEGORIE === c && !absentConfirme(f.lignes[id]))
       .sort((a, b) => V.parId[a].MARQUE.localeCompare(V.parId[b].MARQUE) || V.parId[a].NOM_SYSTEME.localeCompare(V.parId[b].NOM_SYSTEME));
     const parMarque = {};
     ids.forEach(id => { (parMarque[V.parId[id].MARQUE] = parMarque[V.parId[id].MARQUE] || []).push(id); });
@@ -882,6 +903,7 @@ const Veille = (() => {
       blocs.push(h('div', { class: 'groupe' + (av ? ' a-verifier' : '') },
         h('div', { class: 'groupe-tete' }, h('span', { class: 'groupe-nom' }, marque)),
         h('div', { class: 'groupe-corps' }, parMarque[marque].map(id => ligneProduit(id, marque))),
+        blocGamme(c, marque, confirmer[marque] || []),
         av ? h('div', { class: 'verif' }, h('span', { class: 'verif-texte' }, `Repris du ${dateFr(f.prerempli.date)} : prix et facings vérifiés ?`),
           h('button', { class: 'btn petit conforme', 'data-act': 'conforme', 'data-v': u }, '✓ Conforme')) : null));
     }
@@ -902,7 +924,8 @@ const Veille = (() => {
     recherche.addEventListener('search', () => { if (!recherche.value) { res.replaceChildren(); listeKobo.hidden = false; } });
     recherche.addEventListener('input', () => { if (!recherche.value.trim()) listeKobo.hidden = false; });
     // Liste des produits de l'ancien formulaire Kobo (demande du 23/11/2026), par marque : un appui ajoute le produit
-    const kobo = V.cat.filter(p => p.CATEGORIE === c && p.KOBO_PRESENCE && !f.lignes[p.ID])
+    // (sans les produits déjà proposés à confirmer sous leur marque)
+    const kobo = V.cat.filter(p => p.CATEGORIE === c && p.KOBO_PRESENCE && !f.lignes[p.ID] && !confirmer[p.MARQUE])
       .sort((a, b) => a.MARQUE.localeCompare(b.MARQUE) || a.NOM_SYSTEME.localeCompare(b.NOM_SYSTEME));
     const koboMarques = {};
     kobo.forEach(p => { (koboMarques[p.MARQUE] = koboMarques[p.MARQUE] || []).push(p); });
@@ -948,6 +971,28 @@ const Veille = (() => {
     }
 
     return h('section', {}, blocs);
+  }
+
+  // Autres produits d'une marque reprise de la dernière visite (demande du 26/11/2026) : chacun est confirmé
+  // présent (il rejoint la liste, prix et facing à saisir) ou absent, pour ne rien oublier en rayon.
+  function blocGamme(c, marque, liste) {
+    if (!liste.length) return null;
+    const f = V.fiche;
+    const restants = liste.filter(id => !f.lignes[id]).length;
+    return h('div', { class: 'gamme' + (V.montrer && restants ? ' manque' : '') },
+      h('div', { class: 'gamme-tete' },
+        h('strong', {}, `Autres produits ${marque} : présents aujourd'hui ?`),
+        h('small', { class: 'discret' }, restants ? `Absents de la dernière visite. Vérifiez chacun en rayon (${restants} à confirmer).` : '✓ Tous confirmés')),
+      liste.map(id => {
+        const p = V.parId[id], abs = !!f.lignes[id];
+        const court = p.NOM_SYSTEME.startsWith(marque + ' ') ? p.NOM_SYSTEME.slice(marque.length + 1) : p.NOM_SYSTEME;
+        return h('div', { class: 'gamme-ligne' + (abs ? ' repondu' : '') }, vignetteProduit(id), h('span', { class: 'produit-nom' }, court),
+          h('span', { class: 'choix' },
+            h('button', { type: 'button', class: 'btn petit', 'data-act': 'gamme-present', 'data-v': id }, 'Présent'),
+            h('button', { type: 'button', class: 'btn petit' + (abs ? ' actif' : ''), 'data-act': 'gamme-absent', 'data-v': id }, abs ? 'Absent ✓' : 'Absent')));
+      }),
+      restants > 1 ? h('button', { type: 'button', class: 'btn petit', 'data-act': 'gamme-absents', 'data-v': `${c}|${marque}` },
+        `Aucun de ces ${restants} produits en rayon`) : null);
   }
 
   /* ----- Équipements (frigos, can coolers) ----- */
@@ -1021,7 +1066,7 @@ const Veille = (() => {
     return h('div', { class: 'produit' + (absent ? ' absent' : '') + (l.ia && l.ia.confiance !== 'haute' ? ' ia-doute' : '') },
       h('div', { class: 'produit-tete' }, vignetteProduit(id), h('span', { class: 'produit-nom' }, court, badge ? ' ' : null, badge),
         h('button', { class: 'btn petit' + (absent ? ' danger' : ''), 'data-act': 'absent', 'data-v': id },
-          absent ? 'Absent · remettre' : l.repris ? 'Absent' : 'Retirer')),
+          absent ? 'Absent · remettre' : l.repris || l.verifie ? 'Absent' : 'Retirer')),
       doute && !absent ? h('div', { class: 'ia-doute-choix' }, h('small', {}, 'Ou bien :'),
         h('button', { type: 'button', class: 'btn petit', 'data-act': 'ia-echanger', 'data-v': id }, `c'est ${doute.NOM_SYSTEME}`)) : null,
       absent ? null : h('div', { class: 'valeurs' },
@@ -1050,9 +1095,25 @@ const Veille = (() => {
         break;
       case 'conforme': f.confirme[v] = true; break;
       case 'ajouter': f.lignes[v] = { present: true, prix: '', facing: '' }; toucher(v); break;
+      case 'gamme-present': {                       // produit de la gamme vu en rayon : il rejoint la liste, prix et facing à saisir
+        f.lignes[v] = { present: true, prix: '', facing: '', verifie: true };
+        toucher(v); sauver(); rendre();
+        const champ = V.corps.querySelector(`input[data-ref="${v}"][data-champ="prix"]`);
+        if (champ) champ.focus();
+        return;
+      }
+      case 'gamme-absent':                           // second appui : la réponse est annulée
+        if (absentConfirme(f.lignes[v])) delete f.lignes[v]; else f.lignes[v] = { present: false, verifie: true };
+        break;
+      case 'gamme-absents': {
+        const [c, m] = v.split('|');
+        (gammesAConfirmer(c)[m] || []).forEach(id => { if (!f.lignes[id]) f.lignes[id] = { present: false, verifie: true }; });
+        break;
+      }
       case 'absent': {
         const l = f.lignes[v];
-        if (!l.repris) {                             // ajouté par erreur (ou proposé à tort par l'IA) : on le retire
+        if (!l.repris && l.verifie) f.lignes[v] = { present: false, verifie: true };   // confirmé présent par erreur : absent
+        else if (!l.repris) {                        // ajouté par erreur (ou proposé à tort par l'IA) : on le retire
           if (l.ia) (f.iaRejets = f.iaRejets || {})[v] = true;
           delete f.lignes[v];
         } else l.present = l.present === false;      // repris : bascule présent / absent
@@ -1453,6 +1514,6 @@ const Veille = (() => {
 
   return { FORM, TITRE, carte, resume, ouvrir, nouvelle, nbAEnvoyer, envoyer, telechargerHistorique, lignesExport, depuisKobo, derniereVisite,
     telechargerReferentiels, initialiserReferentiels, chargerReferentiels, merchandisers, nomMerch, fourchette, horsFourchette,
-    _etat: () => V, _problemes: () => problemes() };
+    _etat: () => V, _problemes: () => problemes(), _gammes: c => gammesAConfirmer(c) };
 })();
 window.Veille = Veille;
